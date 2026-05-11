@@ -1,0 +1,61 @@
+// Package session defines the core domain types: sessions, states, and events.
+// It has no I/O dependencies and is safe to import from any other package.
+package session
+
+import "time"
+
+type State string
+
+const (
+	StateRunning  State = "running"
+	StateWaiting  State = "waiting"
+	StateIdle     State = "idle"
+	StateFinished State = "finished"
+	StateFailed   State = "failed"
+)
+
+type Session struct {
+	ID          string    // UUID assigned by the daemon on first event.
+	Agent       string    // "claude", "opencode", ...
+	NativeID    string    // The agent's own session identifier, used to correlate hook events.
+	CWD         string
+	HostID      string    // hostname today; reserved for cross-device later.
+	StartedAt   time.Time
+	LastEventAt time.Time
+	Status      State
+}
+
+type EventKind string
+
+const (
+	EventSessionStart EventKind = "session_start"
+	EventNotification EventKind = "notification" // agent waiting for input or permission
+	EventStop         EventKind = "stop"         // clean finish
+	EventFail         EventKind = "fail"
+	EventNote         EventKind = "note" // free-form progress event
+)
+
+type Event struct {
+	SessionID string         `json:"session_id,omitempty"` // assigned by daemon; empty on first contact
+	NativeID  string         `json:"native_id,omitempty"`  // the agent's own session id; used by the daemon to map to SessionID
+	Agent     string         `json:"agent,omitempty"`      // "claude", "opencode", ...
+	Kind      EventKind      `json:"kind"`
+	Timestamp time.Time      `json:"ts"`
+	Payload   map[string]any `json:"payload,omitempty"`
+}
+
+// NextState returns the state a session should transition to after observing
+// an event of the given kind. The empty string means "no state change".
+func NextState(k EventKind) State {
+	switch k {
+	case EventSessionStart, EventNote:
+		return StateRunning
+	case EventNotification:
+		return StateWaiting
+	case EventStop:
+		return StateFinished
+	case EventFail:
+		return StateFailed
+	}
+	return ""
+}

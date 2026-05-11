@@ -1,0 +1,10 @@
+[Unit]
+Description=Agentic Sessions Manager
+After=default.target
+
+[Service]
+ExecStart=%h/.local/bin/sm daemon
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

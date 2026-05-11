@@ -1,0 +1,83 @@
+version: '3'
+
+vars:
+  BIN: '{{.HOME}}/.local/bin/sm'
+  UNIT: '{{.HOME}}/.config/systemd/user/sm.service'
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+    silent: true
+
+  build:
+    desc: Build the sm binary into ./sm
+    cmds:
+      - go build -o ./sm ./cmd/sm
+    sources:
+      - ./**/*.go
+      - go.mod
+      - go.sum
+    generates:
+      - ./sm
+
+  install:
+    desc: Install sm to ~/.local/bin
+    deps: [build]
+    cmds:
+      - install -Dm755 ./sm {{.BIN}}
+
+  run:
+    desc: Run the daemon in the foreground (Ctrl-C to stop)
+    deps: [build]
+    cmds:
+      - ./sm daemon
+
+  fmt:
+    desc: Format Go sources with gofmt
+    cmds:
+      - gofmt -w .
+
+  tidy:
+    desc: Tidy go.mod / go.sum
+    cmds:
+      - go mod tidy
+
+  test:
+    desc: Vet and build all packages (placeholder until a real suite exists)
+    cmds:
+      - go vet ./...
+      - go build ./...
+
+  clean:
+    desc: Remove the local build artifact
+    cmds:
+      - rm -f ./sm
+
+  smoke:
+    desc: End-to-end check — emit a 3-event sequence (daemon must be running)
+    deps: [build]
+    cmds:
+      - ./sm emit session_start agent=claude native=smoke-1 cwd=/tmp/smoke
+      - sleep 0.2
+      - ./sm ls
+      - ./sm emit notification agent=claude native=smoke-1
+      - sleep 0.2
+      - ./sm ls
+      - ./sm emit stop agent=claude native=smoke-1
+      - sleep 0.2
+      - ./sm ls
+
+  service:install:
+    desc: Install and enable the sm systemd --user service
+    deps: [install]
+    cmds:
+      - install -Dm644 ./contrib/sm.service {{.UNIT}}
+      - systemctl --user daemon-reload
+      - systemctl --user enable --now sm.service
+
+  service:logs:
+    desc: Tail the sm service logs
+    cmds:
+      - journalctl --user -u sm.service -f

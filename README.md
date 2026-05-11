@@ -39,7 +39,13 @@ Sessions self-register; the manager never spawns them. You start `claude` or `op
 
 - **Claude Code**: `SessionStart`, `Notification`, `Stop`, and (optionally) `PreToolUse` / `PostToolUse` hooks fire shell commands that publish to NATS.
 - **opencode**: equivalent hooks publish to the same subjects.
-- The first event from a new session is treated as registration: the daemon assigns a UUID and persists it. Subsequent events reference that UUID via a small per-session identifier the hook script tracks (e.g., written to a temp file keyed on the agent's native session ID).
+
+**UUID handoff.** Every hook passes the agent's *native* session id (Claude Code provides one on stdin as `session_id`) plus the agent name. The daemon owns the mapping `(agent, native_id) → uuid` and persists it in the `sessions` table. On every event:
+
+- known `(agent, native_id)` → reuse the existing UUID;
+- unknown → assign a new UUID and create the session row right then.
+
+No client-side state, no NATS request/reply round-trip. A missed `SessionStart` hook is non-fatal: the next event that arrives still produces a coherent session.
 
 ### State model
 
@@ -66,8 +72,10 @@ NATS pub/sub on `localhost:4222`.
 SQLite, single file at `~/.local/share/sm/sm.db`.
 
 ```sql
-sessions(id TEXT PK, agent TEXT, cwd TEXT, started_at, status, last_event_at, host_id TEXT)
-events  (id INTEGER PK, session_id TEXT, ts, kind TEXT, payload JSON)
+sessions(id TEXT PK, agent TEXT, native_id TEXT, cwd TEXT, host_id TEXT,
+         started_at INTEGER, last_event_at INTEGER, status TEXT)
+events  (id INTEGER PK, session_id TEXT, ts INTEGER, kind TEXT, payload JSON)
+-- UNIQUE(agent, native_id) where native_id != ''  → enforces 1:1 handoff
 ```
 
 - `host_id` is included from day one so cross-device data can coexist later without a migration.
@@ -114,5 +122,4 @@ Runs as a systemd **user** service: `systemctl --user start sm`. Starts on login
 
 ## Open questions
 
-- Exact shape of the per-session UUID handoff: does the hook script call `sm register` synchronously on `SessionStart` and cache the UUID in a temp file keyed by Claude's session id, or do we derive a stable id from `(host, claude_session_id)` and skip the round-trip?
-- Whether to ship hook scripts as a one-shot installer (`sm install-hooks`) that edits the user's Claude Code / opencode config, or just document the snippets.
+- Whether to ship hooks as a one-shot installer (`sm install-hooks`) that edits the user's Claude Code / opencode config, or just document the snippet.
