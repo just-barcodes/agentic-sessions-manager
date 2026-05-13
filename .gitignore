@@ -4,3 +4,5 @@
 *.db-journal
 *.db-wal
 *.db-shm
+.task
+
