@@ -138,7 +138,6 @@ func runOpencode(r io.Reader) error {
 // opencodeKind maps opencode event type names to session.EventKind.
 // Note: opencode 1.14.46 emits "permission.asked" at runtime even though the
 // installed @opencode-ai/plugin v1.14.20 types name it "permission.updated".
-// session.error → EventStop for now; see NOTES.md re: failed state.
 func opencodeKind(typeStr string) (session.EventKind, bool) {
 	switch typeStr {
 	case "session.created", "session.updated":
@@ -148,7 +147,7 @@ func opencodeKind(typeStr string) (session.EventKind, bool) {
 	case "session.idle":
 		return session.EventStop, true
 	case "session.error":
-		return session.EventStop, true
+		return session.EventFail, true
 	}
 	return "", false
 }
