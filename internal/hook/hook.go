@@ -19,7 +19,8 @@ import (
 // Run is the `sm hook <agent>` entry point. It always returns nil; any error
 // is written to stderr.
 //
-//	sm hook claude    # reads Claude Code hook JSON from stdin
+//	sm hook claude      # reads Claude Code hook JSON from stdin
+//	sm hook opencode    # reads opencode plugin event JSON from stdin
 func Run(args []string) error {
 	if err := dispatch(args); err != nil {
 		fmt.Fprintln(os.Stderr, "sm hook:", err)
@@ -34,6 +35,8 @@ func dispatch(args []string) error {
 	switch args[0] {
 	case "claude":
 		return runClaude(os.Stdin)
+	case "opencode":
+		return runOpencode(os.Stdin)
 	default:
 		return fmt.Errorf("unknown agent: %q", args[0])
 	}
@@ -82,6 +85,69 @@ func claudeKind(name string) (session.EventKind, bool) {
 	case "Notification":
 		return session.EventNotification, true
 	case "Stop":
+		return session.EventStop, true
+	}
+	return "", false
+}
+
+// opencodeInput is the subset of an opencode plugin event payload we use.
+// Verified against opencode 1.14.46: every session-level event we care about
+// carries the id at properties.sessionID, and session.* events optionally
+// carry the cwd at properties.info.directory.
+type opencodeInput struct {
+	Type       string `json:"type"`
+	Properties struct {
+		SessionID string `json:"sessionID"`
+		Info      *struct {
+			Directory string `json:"directory"`
+		} `json:"info,omitempty"`
+	} `json:"properties"`
+}
+
+func runOpencode(r io.Reader) error {
+	var in opencodeInput
+	if err := json.NewDecoder(r).Decode(&in); err != nil {
+		return fmt.Errorf("decode opencode hook input: %w", err)
+	}
+	kind, ok := opencodeKind(in.Type)
+	if !ok {
+		return nil
+	}
+	if in.Properties.SessionID == "" {
+		return nil
+	}
+
+	e := session.Event{
+		Agent:     "opencode",
+		NativeID:  in.Properties.SessionID,
+		Kind:      kind,
+		Timestamp: time.Now(),
+	}
+	if in.Properties.Info != nil && in.Properties.Info.Directory != "" {
+		e.Payload = map[string]any{"cwd": in.Properties.Info.Directory}
+	}
+
+	b, err := bus.Connect(bus.DefaultURL)
+	if err != nil {
+		return fmt.Errorf("nats connect: %w", err)
+	}
+	defer b.Close()
+	return b.Publish(e)
+}
+
+// opencodeKind maps opencode event type names to session.EventKind.
+// Note: opencode 1.14.46 emits "permission.asked" at runtime even though the
+// installed @opencode-ai/plugin v1.14.20 types name it "permission.updated".
+// session.error → EventStop for now; see NOTES.md re: failed state.
+func opencodeKind(typeStr string) (session.EventKind, bool) {
+	switch typeStr {
+	case "session.created", "session.updated":
+		return session.EventSessionStart, true
+	case "permission.asked":
+		return session.EventNotification, true
+	case "session.idle":
+		return session.EventStop, true
+	case "session.error":
 		return session.EventStop, true
 	}
 	return "", false

@@ -5,3 +5,4 @@
 - handle `/clear` events which do not send SessionEnd events
 - setting for each session if alert should be fired on waiting or finished, or both
 - check https://code.claude.com/docs/en/hooks for hooks docs
+- add _failed_ status (for opencode)
