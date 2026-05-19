@@ -41,7 +41,7 @@ func Run(_ []string) error {
 	}
 	defer st.Close()
 
-	ns, err := startEmbeddedNATS()
+	ns, err := startEmbeddedNATS("127.0.0.1", 4222)
 	if err != nil {
 		return err
 	}
@@ -206,12 +206,15 @@ func newID() string {
 // startEmbeddedNATS boots an in-process NATS server bound to localhost so the
 // daemon owns the bus end-to-end. Logging is suppressed; bind failures surface
 // as a ReadyForConnections timeout.
-func startEmbeddedNATS() (*natsserver.Server, error) {
+func startEmbeddedNATS(host string, port int) (*natsserver.Server, error) {
 	opts := &natsserver.Options{
-		Host:   "127.0.0.1",
-		Port:   4222,
+		Host:   host,
+		Port:   port,
 		NoLog:  true,
 		NoSigs: true, // the daemon owns signal handling
+	}
+	if port <= 1024 || port > 65536 {
+		return nil, fmt.Errorf("create nats server: invalid port number")
 	}
 	ns, err := natsserver.NewServer(opts)
 	if err != nil {
@@ -220,7 +223,7 @@ func startEmbeddedNATS() (*natsserver.Server, error) {
 	go ns.Start()
 	if !ns.ReadyForConnections(5 * time.Second) {
 		ns.Shutdown()
-		return nil, errors.New("nats server not ready (port 4222 in use?)")
+		return nil, errors.New("nats server not ready (port in use?)")
 	}
 	return ns, nil
 }

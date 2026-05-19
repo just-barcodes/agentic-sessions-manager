@@ -5,7 +5,7 @@ A background service that tracks multiple agentic coding sessions (Claude Code, 
 ## Goals
 
 - Single place to see the status of every agent session, regardless of where it's running (terminal, tmux pane, VS Code, etc.).
-- Push-based alerts when a session is waiting for input or finishes — never poll.
+- Push-based alerts when a session is waiting for input or finishes.
 - Fast, scriptable CLI for status, history, and live event streams.
 - Modular design so new agent tools, transports, and alert sinks can be added later.
 
@@ -40,7 +40,7 @@ Sessions self-register; the manager never spawns them. You start `claude` or `op
 - **Claude Code**: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `Notification`, `Stop`, and `SessionEnd` hooks fire shell commands that publish to NATS.
 - **opencode**: equivalent hooks publish to the same subjects.
 
-**UUID handoff.** Every hook passes the agent's *native* session id (Claude Code provides one on stdin as `session_id`) plus the agent name. The daemon owns the mapping `(agent, native_id) → uuid` and persists it in the `sessions` table. On every event:
+**UUID handoff.** Every hook passes the agent's _native_ session id (Claude Code provides one on stdin as `session_id`) plus the agent name. The daemon owns the mapping `(agent, native_id) → uuid` and persists it in the `sessions` table. On every event:
 
 - known `(agent, native_id)` → reuse the existing UUID;
 - unknown → assign a new UUID and create the session row right then.
@@ -146,3 +146,4 @@ Runs as a systemd **user** service: `systemctl --user start sm`. Starts on login
 ## Open questions
 
 - Whether to ship hooks as a one-shot installer (`sm install-hooks`) that edits the user's Claude Code / opencode config, or just document the snippet.
+
