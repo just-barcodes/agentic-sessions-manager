@@ -35,9 +35,13 @@ func List(args []string) error {
 	if err != nil {
 		return err
 	}
+	const layout = "2006-01-02 15:04"
+	fmt.Printf("%-8s  %-10s  %-9s  %-16s  %-16s  %s\n",
+		"ID", "AGENT", "STATUS", "STARTED", "LAST", "CWD")
 	for _, s := range sessions {
-		fmt.Printf("%-8s  %-10s  %-9s  %s\n",
-			short(s.ID), s.Agent, s.Status, s.CWD)
+		fmt.Printf("%-8s  %-10s  %-9s  %-16s  %-16s  %s\n",
+			short(s.ID), s.Agent, s.Status,
+			s.StartedAt.Format(layout), s.LastEventAt.Format(layout), s.CWD)
 	}
 	return nil
 }
