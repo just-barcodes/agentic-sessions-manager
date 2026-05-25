@@ -19,9 +19,14 @@ import (
 
 	"github.com/just-barcodes/agentic-sessions-manager/internal/alert"
 	"github.com/just-barcodes/agentic-sessions-manager/internal/bus"
+	"github.com/just-barcodes/agentic-sessions-manager/internal/liveness"
 	"github.com/just-barcodes/agentic-sessions-manager/internal/session"
 	"github.com/just-barcodes/agentic-sessions-manager/internal/store"
 )
+
+// sweepInterval is how often the daemon reaps sessions whose agent process has
+// died without a clean exit. Liveness checks are cheap (a few /proc reads each).
+const sweepInterval = 30 * time.Second
 
 func Run(_ []string) error {
 	dataDir := xdgDir("XDG_DATA_HOME", ".local/share")
@@ -73,6 +78,7 @@ func Run(_ []string) error {
 	if err := b.Subscribe(ctx, h.handle); err != nil {
 		return err
 	}
+	go h.sweepLoop(ctx)
 	<-ctx.Done()
 	return nil
 }
@@ -116,6 +122,42 @@ func (h *handler) handle(e session.Event) {
 	}
 	for _, sink := range h.sinks {
 		_ = sink.OnStateChange(sess)
+	}
+}
+
+// sweepLoop reaps sessions whose agent process has died without a clean stop.
+// It sweeps once immediately — clearing sessions left running across a daemon
+// restart or reboot — then on every tick until ctx is cancelled.
+func (h *handler) sweepLoop(ctx context.Context) {
+	t := time.NewTicker(sweepInterval)
+	defer t.Stop()
+	h.sweep(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			h.sweep(ctx)
+		}
+	}
+}
+
+// sweep marks dead sessions and notifies sinks so derived state (e.g. the
+// waiting-count file) reflects the reaping. Shares the handler mutex with
+// handle so reaping and event processing never interleave.
+func (h *handler) sweep(ctx context.Context) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	reaped, err := h.store.ReapStale(ctx, h.hostID, func(s session.Session) bool {
+		return !liveness.Alive(liveness.Identity{PID: s.PID, Start: s.PIDStart, BootID: s.BootID})
+	})
+	if err != nil {
+		return // TODO: log
+	}
+	for _, sess := range reaped {
+		for _, sink := range h.sinks {
+			_ = sink.OnStateChange(sess)
+		}
 	}
 }
 

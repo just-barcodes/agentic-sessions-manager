@@ -37,7 +37,7 @@ A background service that tracks multiple agentic coding sessions (Claude Code, 
 
 Sessions self-register; the manager never spawns them. You start `claude` or `opencode` however you normally do (standalone terminal, tmux, VS Code terminal — irrelevant), and the agent's lifecycle hooks publish events to NATS.
 
-- **Claude Code**: `SessionStart`, `Notification`, `Stop`, and (optionally) `PreToolUse` / `PostToolUse` hooks fire shell commands that publish to NATS.
+- **Claude Code**: `SessionStart`, `Notification`, `Stop`, `SessionEnd`, and (optionally) `PreToolUse` / `PostToolUse` hooks fire shell commands that publish to NATS.
 - **opencode**: equivalent hooks publish to the same subjects.
 
 **UUID handoff.** Every hook passes the agent's *native* session id (Claude Code provides one on stdin as `session_id`) plus the agent name. The daemon owns the mapping `(agent, native_id) → uuid` and persists it in the `sessions` table. On every event:
@@ -54,10 +54,11 @@ No client-side state, no NATS request/reply round-trip. A missed `SessionStart` 
 | `running`  | Active, agent is working                         | Hook events         |
 | `waiting`  | Agent is waiting for human input or permission   | `Notification` hook |
 | `idle`     | Alive but no recent activity (user judgment)     | `sm mark idle` (manual) |
-| `finished` | Clean completion                                 | `Stop` hook         |
-| `failed`   | Crashed or non-zero exit                         | `Stop` hook         |
+| `finished` | Clean completion                                 | `Stop` / `SessionEnd` hook |
+| `failed`   | Reported failure                                 | `session.error` (opencode) |
+| `dead`     | Process gone without a clean exit                | reaper (process liveness) |
 
-MVP does **not** auto-detect `idle` or `failed-by-crash` — no polling, no timers. If a session dies without firing `Stop`, it stays `running` in the database until you mark it.
+The daemon does not auto-detect `idle`. It *does* detect crashed sessions — those that die without a clean `SessionEnd`/`Stop` — by **process liveness rather than timers**: hooks record the agent's pid (plus its start time and the boot id) at first contact, and the daemon periodically reaps sessions whose process is gone, marking them `dead`. `sm ls` / `sm status` also reap on read. Sessions without a captured pid are left untouched.
 
 ### Transport
 
@@ -73,10 +74,14 @@ SQLite, single file at `~/.local/share/sm/sm.db`.
 
 ```sql
 sessions(id TEXT PK, agent TEXT, native_id TEXT, cwd TEXT, host_id TEXT,
-         started_at INTEGER, last_event_at INTEGER, status TEXT)
+         started_at INTEGER, last_event_at INTEGER, status TEXT,
+         pid INTEGER, pid_start INTEGER, boot_id TEXT)
 events  (id INTEGER PK, session_id TEXT, ts INTEGER, kind TEXT, payload JSON)
 -- UNIQUE(agent, native_id) where native_id != ''  → enforces 1:1 handoff
+-- (pid, pid_start, boot_id) is the agent process fingerprint used for liveness
 ```
+
+- `pid` / `pid_start` / `boot_id` are added by an additive migration on open, so existing databases keep working.
 
 - `host_id` is included from day one so cross-device data can coexist later without a migration.
 - History starts as events-only (state transitions, token counts when the hook supplies them). Schema extends cleanly to full transcripts later by adding a `transcripts` table or expanding the `events.payload` blob.
@@ -113,7 +118,7 @@ Runs as a systemd **user** service: `systemctl --user start sm`. Starts on login
 ## Future extensions
 
 - **Control plane**: send input to a `waiting` session; stop a session.
-- **Auto-detect idle/crashed**: event-driven timeouts in the daemon (no session-side polling).
+- **Auto-detect idle**: event-driven idle detection in the daemon (crashed sessions are already reaped via process liveness).
 - **Resource tracking**: tokens, wall-time, cost per session (depends on what hooks expose).
 - **Cross-device**: point hooks at a shared NATS, add `host_id`-aware queries. Schema already supports this.
 - **Session summaries**: LLM-generated one-paragraph summary per session for context-switching.

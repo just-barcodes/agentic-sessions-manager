@@ -173,35 +173,35 @@ func (s *Store) CountByStatus(ctx context.Context, status session.State) (int, e
 // their agent process is gone. Only sessions with a captured pid are probed; the
 // rest are left untouched (un-probeable). The session's last_event_at is
 // preserved so the row still reflects when the agent was actually last seen.
-// Returns the number of sessions reaped.
-func (s *Store) ReapStale(ctx context.Context, hostID string, isDead func(session.Session) bool) (int, error) {
+// Returns the reaped sessions (with Status set to dead) so callers can react.
+func (s *Store) ReapStale(ctx context.Context, hostID string, isDead func(session.Session) bool) ([]session.Session, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, host_id, last_event_at, pid, pid_start, boot_id
+		SELECT id, agent, cwd, host_id, last_event_at, pid, pid_start, boot_id
 		FROM sessions
 		WHERE host_id = ? AND pid != 0 AND status IN (?, ?)`,
 		hostID, string(session.StateRunning), string(session.StateWaiting))
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	var stale []session.Session
 	for rows.Next() {
 		var sess session.Session
 		var lastEventAt int64
-		if err := rows.Scan(&sess.ID, &sess.HostID, &lastEventAt,
+		if err := rows.Scan(&sess.ID, &sess.Agent, &sess.CWD, &sess.HostID, &lastEventAt,
 			&sess.PID, &sess.PIDStart, &sess.BootID); err != nil {
 			rows.Close()
-			return 0, err
+			return nil, err
 		}
 		sess.LastEventAt = time.Unix(lastEventAt, 0)
 		stale = append(stale, sess)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return 0, err
+		return nil, err
 	}
 	rows.Close() // release before issuing writes on the same connection
 
-	reaped := 0
+	var reaped []session.Session
 	for _, sess := range stale {
 		if !isDead(sess) {
 			continue
@@ -209,7 +209,8 @@ func (s *Store) ReapStale(ctx context.Context, hostID string, isDead func(sessio
 		if err := s.UpdateStatus(ctx, sess.ID, session.StateDead, sess.LastEventAt); err != nil {
 			return reaped, err
 		}
-		reaped++
+		sess.Status = session.StateDead
+		reaped = append(reaped, sess)
 	}
 	return reaped, nil
 }

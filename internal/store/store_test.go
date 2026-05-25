@@ -91,8 +91,11 @@ func TestReapStale(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reaped != 1 {
-		t.Fatalf("want 1 reaped, got %d", reaped)
+	if len(reaped) != 1 || reaped[0].ID != "dead" {
+		t.Fatalf("want only [dead] reaped, got %+v", reaped)
+	}
+	if reaped[0].Status != session.StateDead {
+		t.Errorf("reaped session status = %q, want %q", reaped[0].Status, session.StateDead)
 	}
 
 	all, err := st.ListSessions(ctx, true)
@@ -168,7 +171,7 @@ func TestMigrateExistingDB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reaped != 0 {
-		t.Errorf("pre-identity row (pid 0) is un-probeable, but %d reaped", reaped)
+	if len(reaped) != 0 {
+		t.Errorf("pre-identity row (pid 0) is un-probeable, but %d reaped", len(reaped))
 	}
 }

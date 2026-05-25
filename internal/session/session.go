@@ -34,7 +34,8 @@ type EventKind string
 const (
 	EventSessionStart EventKind = "session_start"
 	EventNotification EventKind = "notification" // agent waiting for input or permission
-	EventStop         EventKind = "stop"         // clean finish
+	EventStop         EventKind = "stop"         // end of a response turn
+	EventSessionEnd   EventKind = "session_end"  // session terminated (clean exit)
 	EventFail         EventKind = "fail"
 	EventNote         EventKind = "note" // free-form progress event
 )
@@ -59,7 +60,7 @@ func NextState(k EventKind) State {
 		return StateRunning
 	case EventNotification:
 		return StateWaiting
-	case EventStop:
+	case EventStop, EventSessionEnd:
 		return StateFinished
 	case EventFail:
 		return StateFailed

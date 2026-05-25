@@ -58,6 +58,7 @@ type claudeInput struct {
 	SessionID     string `json:"session_id"`
 	HookEventName string `json:"hook_event_name"`
 	CWD           string `json:"cwd"`
+	Reason        string `json:"reason"` // SessionEnd: clear|logout|prompt_input_exit|other
 }
 
 func runClaude(r io.Reader) error {
@@ -75,9 +76,13 @@ func runClaude(r io.Reader) error {
 		NativeID:  in.SessionID,
 		Kind:      kind,
 		Timestamp: time.Now(),
+		Payload:   map[string]any{},
 	}
 	if in.CWD != "" {
-		e.Payload = map[string]any{"cwd": in.CWD}
+		e.Payload["cwd"] = in.CWD
+	}
+	if in.Reason != "" {
+		e.Payload["reason"] = in.Reason
 	}
 	attachIdentity(&e)
 
@@ -97,6 +102,8 @@ func claudeKind(name string) (session.EventKind, bool) {
 		return session.EventNotification, true
 	case "Stop":
 		return session.EventStop, true
+	case "SessionEnd":
+		return session.EventSessionEnd, true
 	}
 	return "", false
 }
