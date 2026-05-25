@@ -55,5 +55,5 @@ func (c CountFile) OnStateChange(_ session.Session) error {
 	if err := os.MkdirAll(filepath.Dir(c.Path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(c.Path, []byte(fmt.Sprintf("%d\n", n)), 0o644)
+	return os.WriteFile(c.Path, fmt.Appendf(nil, "%d\n", n), 0o644)
 }
