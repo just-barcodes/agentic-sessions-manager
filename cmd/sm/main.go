@@ -3,7 +3,7 @@
 // Usage:
 //
 //	sm daemon              # run the long-running manager (systemd --user)
-//	sm ls                  # list known sessions
+//	sm ls [--all]          # list active sessions (--all/-a includes finished)
 //	sm show <id>           # details + recent events
 //	sm watch               # tail the live event stream
 //	sm mark <id> <state>   # override session state (e.g. idle)

@@ -17,14 +17,21 @@ import (
 	"github.com/just-barcodes/agentic-sessions-manager/internal/store"
 )
 
-func List(_ []string) error {
+func List(args []string) error {
+	all := false
+	for _, a := range args {
+		if a == "--all" || a == "-a" {
+			all = true
+		}
+	}
+
 	st, err := openStore()
 	if err != nil {
 		return err
 	}
 	defer st.Close()
 
-	sessions, err := st.ListSessions(context.Background())
+	sessions, err := st.ListSessions(context.Background(), all)
 	if err != nil {
 		return err
 	}
@@ -145,7 +152,7 @@ func Status(_ []string) error {
 		return err
 	}
 	defer st.Close()
-	sessions, err := st.ListSessions(context.Background())
+	sessions, err := st.ListSessions(context.Background(), true)
 	if err != nil {
 		return err
 	}

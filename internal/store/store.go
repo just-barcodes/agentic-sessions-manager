@@ -102,10 +102,20 @@ func (s *Store) AppendEvent(ctx context.Context, e session.Event) error {
 	return err
 }
 
-func (s *Store) ListSessions(ctx context.Context) ([]session.Session, error) {
-	rows, err := s.db.QueryContext(ctx, `
+// ListSessions returns sessions ordered most-recently-active first. When
+// includeFinished is false, sessions in the finished state are omitted.
+func (s *Store) ListSessions(ctx context.Context, includeFinished bool) ([]session.Session, error) {
+	query := `
 		SELECT id, agent, native_id, cwd, host_id, started_at, last_event_at, status
-		FROM sessions ORDER BY last_event_at DESC`)
+		FROM sessions`
+	var args []any
+	if !includeFinished {
+		query += ` WHERE status != ?`
+		args = append(args, string(session.StateFinished))
+	}
+	query += ` ORDER BY last_event_at DESC`
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
