@@ -145,6 +145,9 @@ func (h *handler) resolveSession(ctx context.Context, e *session.Event) error {
 		StartedAt:   e.Timestamp,
 		LastEventAt: e.Timestamp,
 		Status:      session.StateRunning,
+		PID:         e.PID,
+		PIDStart:    e.PIDStart,
+		BootID:      e.BootID,
 	})
 }
 

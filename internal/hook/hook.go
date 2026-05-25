@@ -13,8 +13,18 @@ import (
 	"time"
 
 	"github.com/just-barcodes/agentic-sessions-manager/internal/bus"
+	"github.com/just-barcodes/agentic-sessions-manager/internal/liveness"
 	"github.com/just-barcodes/agentic-sessions-manager/internal/session"
 )
+
+// attachIdentity fingerprints the agent process that launched this hook so the
+// daemon can later tell whether the session is still alive. Best-effort: if no
+// durable ancestor is found the session is simply left un-probeable.
+func attachIdentity(e *session.Event) {
+	if id, ok := liveness.Capture(); ok {
+		e.PID, e.PIDStart, e.BootID = id.PID, id.Start, id.BootID
+	}
+}
 
 // Run is the `sm hook <agent>` entry point. It always returns nil; any error
 // is written to stderr.
@@ -69,6 +79,7 @@ func runClaude(r io.Reader) error {
 	if in.CWD != "" {
 		e.Payload = map[string]any{"cwd": in.CWD}
 	}
+	attachIdentity(&e)
 
 	b, err := bus.Connect(bus.DefaultURL)
 	if err != nil {
@@ -126,6 +137,7 @@ func runOpencode(r io.Reader) error {
 	if in.Properties.Info != nil && in.Properties.Info.Directory != "" {
 		e.Payload = map[string]any{"cwd": in.Properties.Info.Directory}
 	}
+	attachIdentity(&e)
 
 	b, err := bus.Connect(bus.DefaultURL)
 	if err != nil {

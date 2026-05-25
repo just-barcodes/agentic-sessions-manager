@@ -13,9 +13,23 @@ import (
 	"time"
 
 	"github.com/just-barcodes/agentic-sessions-manager/internal/bus"
+	"github.com/just-barcodes/agentic-sessions-manager/internal/liveness"
 	"github.com/just-barcodes/agentic-sessions-manager/internal/session"
 	"github.com/just-barcodes/agentic-sessions-manager/internal/store"
 )
+
+// reapStale marks sessions whose agent process has died (no clean stop ever
+// arrived) on this host. Best-effort: errors are swallowed so a reaping failure
+// never blocks listing.
+func reapStale(ctx context.Context, st *store.Store) {
+	host, err := os.Hostname()
+	if err != nil {
+		return
+	}
+	_, _ = st.ReapStale(ctx, host, func(s session.Session) bool {
+		return !liveness.Alive(liveness.Identity{PID: s.PID, Start: s.PIDStart, BootID: s.BootID})
+	})
+}
 
 func List(args []string) error {
 	all := false
@@ -31,7 +45,10 @@ func List(args []string) error {
 	}
 	defer st.Close()
 
-	sessions, err := st.ListSessions(context.Background(), all)
+	ctx := context.Background()
+	reapStale(ctx, st)
+
+	sessions, err := st.ListSessions(ctx, all)
 	if err != nil {
 		return err
 	}
@@ -156,7 +173,9 @@ func Status(_ []string) error {
 		return err
 	}
 	defer st.Close()
-	sessions, err := st.ListSessions(context.Background(), true)
+	ctx := context.Background()
+	reapStale(ctx, st)
+	sessions, err := st.ListSessions(ctx, true)
 	if err != nil {
 		return err
 	}
@@ -226,4 +245,3 @@ func short(id string) string {
 	}
 	return id[:8]
 }
-

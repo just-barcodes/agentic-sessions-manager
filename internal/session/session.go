@@ -12,17 +12,21 @@ const (
 	StateIdle     State = "idle"
 	StateFinished State = "finished"
 	StateFailed   State = "failed"
+	StateDead     State = "dead" // agent process gone without a clean stop; set by the reaper.
 )
 
 type Session struct {
-	ID          string    // UUID assigned by the daemon on first event.
-	Agent       string    // "claude", "opencode", ...
-	NativeID    string    // The agent's own session identifier, used to correlate hook events.
+	ID          string // UUID assigned by the daemon on first event.
+	Agent       string // "claude", "opencode", ...
+	NativeID    string // The agent's own session identifier, used to correlate hook events.
 	CWD         string
-	HostID      string    // hostname today; reserved for cross-device later.
+	HostID      string // hostname today; reserved for cross-device later.
 	StartedAt   time.Time
 	LastEventAt time.Time
 	Status      State
+	PID         int    // OS pid of the agent process; 0 when not captured.
+	PIDStart    uint64 // PID's /proc start time, used to detect pid reuse.
+	BootID      string // boot id when PID was captured.
 }
 
 type EventKind string
@@ -42,6 +46,9 @@ type Event struct {
 	Kind      EventKind      `json:"kind"`
 	Timestamp time.Time      `json:"ts"`
 	Payload   map[string]any `json:"payload,omitempty"`
+	PID       int            `json:"pid,omitempty"`       // agent process id, captured by the hook
+	PIDStart  uint64         `json:"pid_start,omitempty"` // PID's /proc start time
+	BootID    string         `json:"boot_id,omitempty"`   // boot id when PID was captured
 }
 
 // NextState returns the state a session should transition to after observing

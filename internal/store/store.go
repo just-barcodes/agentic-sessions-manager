@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -54,17 +55,40 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
 	return &Store{db: db}, nil
+}
+
+// migrate applies additive column migrations. Re-running is safe: adding a
+// column that already exists errors with "duplicate column name", which we
+// ignore so existing databases pick up the new columns on next open.
+func migrate(db *sql.DB) error {
+	alters := []string{
+		`ALTER TABLE sessions ADD COLUMN pid INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE sessions ADD COLUMN pid_start INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE sessions ADD COLUMN boot_id TEXT NOT NULL DEFAULT ''`,
+	}
+	for _, q := range alters {
+		if _, err := db.ExecContext(context.Background(), q); err != nil &&
+			!strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) CreateSession(ctx context.Context, sess session.Session) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO sessions(id, agent, native_id, cwd, host_id, started_at, last_event_at, status)
-		VALUES(?,?,?,?,?,?,?,?)`,
+		INSERT INTO sessions(id, agent, native_id, cwd, host_id, started_at, last_event_at, status, pid, pid_start, boot_id)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 		sess.ID, sess.Agent, sess.NativeID, sess.CWD, sess.HostID,
-		sess.StartedAt.Unix(), sess.LastEventAt.Unix(), string(sess.Status))
+		sess.StartedAt.Unix(), sess.LastEventAt.Unix(), string(sess.Status),
+		sess.PID, sess.PIDStart, sess.BootID)
 	return err
 }
 
@@ -110,8 +134,8 @@ func (s *Store) ListSessions(ctx context.Context, includeFinished bool) ([]sessi
 		FROM sessions`
 	var args []any
 	if !includeFinished {
-		query += ` WHERE status != ?`
-		args = append(args, string(session.StateFinished))
+		query += ` WHERE status NOT IN (?, ?)`
+		args = append(args, string(session.StateFinished), string(session.StateDead))
 	}
 	query += ` ORDER BY last_event_at DESC`
 
@@ -143,6 +167,51 @@ func (s *Store) CountByStatus(ctx context.Context, status session.State) (int, e
 	err := s.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM sessions WHERE status = ?`, string(status)).Scan(&n)
 	return n, err
+}
+
+// ReapStale marks running or waiting sessions on hostID dead when isDead reports
+// their agent process is gone. Only sessions with a captured pid are probed; the
+// rest are left untouched (un-probeable). The session's last_event_at is
+// preserved so the row still reflects when the agent was actually last seen.
+// Returns the number of sessions reaped.
+func (s *Store) ReapStale(ctx context.Context, hostID string, isDead func(session.Session) bool) (int, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, host_id, last_event_at, pid, pid_start, boot_id
+		FROM sessions
+		WHERE host_id = ? AND pid != 0 AND status IN (?, ?)`,
+		hostID, string(session.StateRunning), string(session.StateWaiting))
+	if err != nil {
+		return 0, err
+	}
+	var stale []session.Session
+	for rows.Next() {
+		var sess session.Session
+		var lastEventAt int64
+		if err := rows.Scan(&sess.ID, &sess.HostID, &lastEventAt,
+			&sess.PID, &sess.PIDStart, &sess.BootID); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		sess.LastEventAt = time.Unix(lastEventAt, 0)
+		stale = append(stale, sess)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close() // release before issuing writes on the same connection
+
+	reaped := 0
+	for _, sess := range stale {
+		if !isDead(sess) {
+			continue
+		}
+		if err := s.UpdateStatus(ctx, sess.ID, session.StateDead, sess.LastEventAt); err != nil {
+			return reaped, err
+		}
+		reaped++
+	}
+	return reaped, nil
 }
 
 // GetSession resolves a session by id prefix and returns it along with its
