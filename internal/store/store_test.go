@@ -59,6 +59,39 @@ func TestListSessionsFiltersFinished(t *testing.T) {
 	}
 }
 
+// TestListSessionsReturnsIdentity guards the pid/pid_start/boot_id round trip:
+// ListSessions once selected neither, so `sm status --json` and `sm ls` reported
+// every session as pid 0 even when the fingerprint was captured.
+func TestListSessionsReturnsIdentity(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "sm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+	now := time.Now()
+	if err := st.CreateSession(ctx, session.Session{
+		ID: "s", Agent: "claude", CWD: "/tmp", HostID: "h",
+		StartedAt: now, LastEventAt: now, Status: session.StateWaiting,
+		PID: 4242, PIDStart: 99, BootID: "boot",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := st.ListSessions(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("want 1 session, got %d", len(all))
+	}
+	got := all[0]
+	if got.PID != 4242 || got.PIDStart != 99 || got.BootID != "boot" {
+		t.Errorf("identity not returned: pid=%d start=%d boot=%q", got.PID, got.PIDStart, got.BootID)
+	}
+}
+
 func TestReapStale(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "sm.db"))
 	if err != nil {

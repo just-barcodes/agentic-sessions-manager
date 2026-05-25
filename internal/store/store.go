@@ -130,7 +130,7 @@ func (s *Store) AppendEvent(ctx context.Context, e session.Event) error {
 // includeFinished is false, sessions in the finished state are omitted.
 func (s *Store) ListSessions(ctx context.Context, includeFinished bool) ([]session.Session, error) {
 	query := `
-		SELECT id, agent, native_id, cwd, host_id, started_at, last_event_at, status
+		SELECT id, agent, native_id, cwd, host_id, started_at, last_event_at, status, pid, pid_start, boot_id
 		FROM sessions`
 	var args []any
 	if !includeFinished {
@@ -151,7 +151,7 @@ func (s *Store) ListSessions(ctx context.Context, includeFinished bool) ([]sessi
 		var startedAt, lastEventAt int64
 		var status string
 		if err := rows.Scan(&sess.ID, &sess.Agent, &sess.NativeID, &sess.CWD, &sess.HostID,
-			&startedAt, &lastEventAt, &status); err != nil {
+			&startedAt, &lastEventAt, &status, &sess.PID, &sess.PIDStart, &sess.BootID); err != nil {
 			return nil, err
 		}
 		sess.StartedAt = time.Unix(startedAt, 0)
