@@ -8,6 +8,7 @@
 //	sm watch               # tail the live event stream
 //	sm mark <id> <state>   # override session state (e.g. idle)
 //	sm status              # JSON snapshot for walker / scripts
+//	sm focus <id>          # raise the window/pane hosting a session's agent
 //	sm emit <kind> [k=v]   # publish an event (low-level)
 //	sm hook <agent>        # entry point for agent hook scripts; reads stdin
 package main
@@ -42,6 +43,8 @@ func main() {
 		err = cli.Mark(args)
 	case "status":
 		err = cli.Status(args)
+	case "focus":
+		err = cli.Focus(args)
 	case "emit":
 		err = cli.Emit(args)
 	case "hook":
@@ -57,5 +60,5 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: sm <daemon|ls|show|watch|mark|status|emit|hook> [args...]")
+	fmt.Fprintln(os.Stderr, "usage: sm <daemon|ls|show|watch|mark|status|focus|emit|hook> [args...]")
 }

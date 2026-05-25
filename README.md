@@ -91,7 +91,7 @@ events  (id INTEGER PK, session_id TEXT, ts INTEGER, kind TEXT, payload JSON)
 When a session enters `waiting` or `finished`, the daemon fans out to:
 
 - **Desktop notification** via `notify-send` (libnotify).
-- **Walker / status bar** via a JSON endpoint (`sm status --json`) walker can read cheaply on demand, plus a count file at `~/.local/state/sm/waiting-count` updated on every state change for zero-cost bar polling.
+- **Walker / status bar** via a JSON endpoint (`sm status --json`) walker can read cheaply on demand, plus a count file at `~/.local/state/sm/waiting-count` updated on every state change for zero-cost bar polling. Walker can also jump straight to a waiting session — see [Switching to a waiting session](#switching-to-a-waiting-session).
 
 ## CLI
 
@@ -101,7 +101,30 @@ sm show <id>          # details + recent events for one session
 sm watch              # tail event stream (blocks, prints as events arrive)
 sm mark <id> idle     # manual state override
 sm status --json      # machine-readable summary for walker / scripts
+sm focus <id>         # raise the terminal window/tmux pane hosting the session
 ```
+
+### Switching to a waiting session
+
+`sm focus <id>` jumps to where a session lives. It reuses the agent process
+fingerprint captured for liveness: from the stored pid it inspects the live
+process to decide how to focus.
+
+- **Bare terminal window**: walks the agent's process ancestors and raises the
+  Hyprland window that owns them (`hyprctl dispatch focuswindow`).
+- **Inside tmux** (`TMUX_PANE` set in the agent's environment): finds a client
+  viewing the pane's session, raises that client's window, and selects the pane.
+
+`contrib/sm-switch.sh` wires this to walker — it lists waiting sessions, you
+fuzzy-pick one, and it jumps. Bind it in `hyprland.conf`:
+
+```
+bind = $mod, S, exec, ~/.local/bin/sm-switch.sh
+```
+
+Focusing a window is a window-manager action, not agent control, so it stays
+within the observe-only scope. A session whose process was never fingerprinted
+(`pid 0`) or has since exited cannot be focused, and `sm focus` says so.
 
 ## Daemon
 

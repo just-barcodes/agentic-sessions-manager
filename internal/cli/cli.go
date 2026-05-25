@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/just-barcodes/agentic-sessions-manager/internal/bus"
+	"github.com/just-barcodes/agentic-sessions-manager/internal/focus"
 	"github.com/just-barcodes/agentic-sessions-manager/internal/liveness"
 	"github.com/just-barcodes/agentic-sessions-manager/internal/session"
 	"github.com/just-barcodes/agentic-sessions-manager/internal/store"
@@ -165,6 +166,29 @@ func parseState(s string) (session.State, bool) {
 		return st, true
 	}
 	return "", false
+}
+
+// Focus raises the terminal window (and tmux pane) hosting a session's agent
+// process, so the user can jump to a session that is waiting for input.
+func Focus(args []string) error {
+	if len(args) < 1 {
+		return errors.New("usage: sm focus <id>")
+	}
+	st, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	sess, _, err := st.GetSession(context.Background(), args[0], 0)
+	if err != nil {
+		return err
+	}
+	return focus.Focus(focus.RealSystem(), liveness.Identity{
+		PID:    sess.PID,
+		Start:  sess.PIDStart,
+		BootID: sess.BootID,
+	})
 }
 
 func Status(_ []string) error {

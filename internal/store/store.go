@@ -248,7 +248,7 @@ func (s *Store) ResolveSessionID(ctx context.Context, idPrefix string) (string, 
 
 func (s *Store) resolveByPrefix(ctx context.Context, idPrefix string) (session.Session, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, agent, native_id, cwd, host_id, started_at, last_event_at, status
+		SELECT id, agent, native_id, cwd, host_id, started_at, last_event_at, status, pid, pid_start, boot_id
 		FROM sessions WHERE id LIKE ? LIMIT 2`, idPrefix+"%")
 	if err != nil {
 		return session.Session{}, err
@@ -261,7 +261,7 @@ func (s *Store) resolveByPrefix(ctx context.Context, idPrefix string) (session.S
 		var startedAt, lastEventAt int64
 		var status string
 		if err := rows.Scan(&sess.ID, &sess.Agent, &sess.NativeID, &sess.CWD, &sess.HostID,
-			&startedAt, &lastEventAt, &status); err != nil {
+			&startedAt, &lastEventAt, &status, &sess.PID, &sess.PIDStart, &sess.BootID); err != nil {
 			return session.Session{}, err
 		}
 		sess.StartedAt = time.Unix(startedAt, 0)
