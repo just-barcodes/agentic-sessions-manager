@@ -1,8 +1,8 @@
-version: '3'
+version: "3"
 
 vars:
-  BIN: '{{.HOME}}/.local/bin/sm'
-  UNIT: '{{.HOME}}/.config/systemd/user/sm.service'
+  BIN: "{{.HOME}}/.local/bin/sm"
+  UNIT: "{{.HOME}}/.config/systemd/user/sm.service"
 
 tasks:
   default:
@@ -76,6 +76,7 @@ tasks:
       - install -Dm644 ./contrib/sm.service {{.UNIT}}
       - systemctl --user daemon-reload
       - systemctl --user enable --now sm.service
+      - systemctl --user restart sm.service
 
   service:logs:
     desc: Tail the sm service logs
