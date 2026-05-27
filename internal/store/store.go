@@ -169,17 +169,20 @@ func (s *Store) CountByStatus(ctx context.Context, status session.State) (int, e
 	return n, err
 }
 
-// ReapStale marks running or waiting sessions on hostID dead when isDead reports
-// their agent process is gone. Only sessions with a captured pid are probed; the
-// rest are left untouched (un-probeable). The session's last_event_at is
-// preserved so the row still reflects when the agent was actually last seen.
-// Returns the reaped sessions (with Status set to dead) so callers can react.
+// ReapStale marks non-terminal sessions on hostID dead when isDead reports their
+// agent process is gone. Every state except the two terminal ones (finished —
+// clean exit — and dead — already reaped) is probed, so a session that died
+// while running, waiting, idle, or failed is corrected. Only sessions with a
+// captured pid are probed; the rest are left untouched (un-probeable). The
+// session's last_event_at is preserved so the row still reflects when the agent
+// was actually last seen. Returns the reaped sessions (with Status set to dead)
+// so callers can react.
 func (s *Store) ReapStale(ctx context.Context, hostID string, isDead func(session.Session) bool) ([]session.Session, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, agent, cwd, host_id, last_event_at, pid, pid_start, boot_id
 		FROM sessions
-		WHERE host_id = ? AND pid != 0 AND status IN (?, ?)`,
-		hostID, string(session.StateRunning), string(session.StateWaiting))
+		WHERE host_id = ? AND pid != 0 AND status NOT IN (?, ?)`,
+		hostID, string(session.StateFinished), string(session.StateDead))
 	if err != nil {
 		return nil, err
 	}

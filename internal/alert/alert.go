@@ -1,12 +1,11 @@
 // Package alert delivers state changes to the user. The Sink interface lets
-// the daemon fan out to multiple destinations (desktop notifications, walker
-// status file, future webhooks, etc.) without coupling them to each other.
+// the daemon fan out to multiple destinations (walker status file, future
+// webhooks, etc.) without coupling them to each other.
 package alert
 
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 
 	"github.com/just-barcodes/agentic-sessions-manager/internal/session"
@@ -14,30 +13,6 @@ import (
 
 type Sink interface {
 	OnStateChange(sess session.Session) error
-}
-
-// NotifySend pops a desktop notification on attention-worthy transitions.
-type NotifySend struct{}
-
-func (NotifySend) OnStateChange(sess session.Session) error {
-	summary, ok := summaryFor(sess.Status)
-	if !ok {
-		return nil
-	}
-	body := fmt.Sprintf("%s — %s", sess.Agent, sess.CWD)
-	return exec.Command("notify-send", "-a", "sm", summary, body).Run()
-}
-
-func summaryFor(s session.State) (string, bool) {
-	switch s {
-	case session.StateWaiting:
-		return "Agent waiting for input", true
-	case session.StateFinished:
-		return "Agent finished", true
-	case session.StateFailed:
-		return "Agent failed", true
-	}
-	return "", false
 }
 
 // CountFile maintains a small "waiting count" file that walker / status bars

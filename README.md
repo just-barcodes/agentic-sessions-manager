@@ -28,16 +28,16 @@ A background service that tracks multiple agentic coding sessions (Claude Code, 
 │ (hook fires)     │ ─────────► │  - emits alerts  │
 └──────────────────┘            └────────┬─────────┘
                                          │
-                          ┌──────────────┼─────────────┐
-                          ▼              ▼             ▼
-                    notify-send      walker bar     sm watch
+                              ┌──────────┴──────────┐
+                              ▼                     ▼
+                         walker bar              sm watch
 ```
 
 ### Session registration
 
 Sessions self-register; the manager never spawns them. You start `claude` or `opencode` however you normally do (standalone terminal, tmux, VS Code terminal — irrelevant), and the agent's lifecycle hooks publish events to NATS.
 
-- **Claude Code**: `SessionStart`, `Notification`, `Stop`, `SessionEnd`, and (optionally) `PreToolUse` / `PostToolUse` hooks fire shell commands that publish to NATS.
+- **Claude Code**: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `Notification`, `Stop`, and `SessionEnd` hooks fire shell commands that publish to NATS.
 - **opencode**: equivalent hooks publish to the same subjects.
 
 **UUID handoff.** Every hook passes the agent's *native* session id (Claude Code provides one on stdin as `session_id`) plus the agent name. The daemon owns the mapping `(agent, native_id) → uuid` and persists it in the `sessions` table. On every event:
@@ -51,14 +51,16 @@ No client-side state, no NATS request/reply round-trip. A missed `SessionStart` 
 
 | State      | Meaning                                          | Set by              |
 |------------|--------------------------------------------------|---------------------|
-| `running`  | Active, agent is working                         | Hook events         |
-| `waiting`  | Agent is waiting for human input or permission   | `Notification` hook |
-| `idle`     | Alive but no recent activity (user judgment)     | `sm mark idle` (manual) |
-| `finished` | Clean completion                                 | `Stop` / `SessionEnd` hook |
+| `running`  | Actively processing a turn                       | `SessionStart`, `UserPromptSubmit`, `PreToolUse` |
+| `waiting`  | Blocked on human input or permission             | `Notification` hook |
+| `idle`     | Alive, between turns (last turn ended)           | `Stop` hook (or `sm mark idle`) |
+| `finished` | Session terminated cleanly                       | `SessionEnd` hook   |
 | `failed`   | Reported failure                                 | `session.error` (opencode) |
 | `dead`     | Process gone without a clean exit                | reaper (process liveness) |
 
-The daemon does not auto-detect `idle`. It *does* detect crashed sessions — those that die without a clean `SessionEnd`/`Stop` — by **process liveness rather than timers**: hooks record the agent's pid (plus its start time and the boot id) at first contact, and the daemon periodically reaps sessions whose process is gone, marking them `dead`. `sm ls` / `sm status` also reap on read. Sessions without a captured pid are left untouched.
+State is edge-driven: it reflects the last lifecycle event seen. The key distinction is that `idle` (the agent finished a turn and is waiting at the prompt) is separate from `finished` (the session actually terminated). `idle` is derived automatically from each turn's `Stop`; `finished` is set only by `SessionEnd`.
+
+Because `SessionEnd` is unreliable — it does not fire on `/clear` or `/exit` — genuine termination is usually caught by the reaper instead. The reaper detects gone sessions by **process liveness rather than timers**: hooks record the agent's pid (plus its start time and the boot id) at first contact, and the daemon periodically reaps any non-terminal session (anything but `finished`/`dead`) whose process is gone, marking it `dead`. `sm ls` / `sm status` also reap on read. Sessions without a captured pid are left untouched.
 
 ### Transport
 
@@ -88,10 +90,11 @@ events  (id INTEGER PK, session_id TEXT, ts INTEGER, kind TEXT, payload JSON)
 
 ### Alerts
 
-When a session enters `waiting` or `finished`, the daemon fans out to:
+On every state change the daemon updates the status surfaces:
 
-- **Desktop notification** via `notify-send` (libnotify).
 - **Walker / status bar** via a JSON endpoint (`sm status --json`) walker can read cheaply on demand, plus a count file at `~/.local/state/sm/waiting-count` updated on every state change for zero-cost bar polling. Walker can also jump straight to a waiting session — see [Switching to a waiting session](#switching-to-a-waiting-session).
+
+> Push notifications (previously `notify-send`) were removed pending a better design. The count file and `sm status` are the only surfaces today.
 
 ## CLI
 

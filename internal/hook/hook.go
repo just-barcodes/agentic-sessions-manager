@@ -98,6 +98,10 @@ func claudeKind(name string) (session.EventKind, bool) {
 	switch name {
 	case "SessionStart":
 		return session.EventSessionStart, true
+	case "UserPromptSubmit":
+		return session.EventUserPrompt, true
+	case "PreToolUse":
+		return session.EventToolUse, true
 	case "Notification":
 		return session.EventNotification, true
 	case "Stop":

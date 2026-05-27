@@ -25,6 +25,7 @@ func TestListSessionsFiltersFinished(t *testing.T) {
 	}{
 		{"run", session.StateRunning},
 		{"wait", session.StateWaiting},
+		{"between", session.StateIdle}, // alive, between turns: must stay visible
 		{"done", session.StateFinished},
 		{"boom", session.StateFailed},
 	}
@@ -41,8 +42,8 @@ func TestListSessionsFiltersFinished(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(active) != 3 {
-		t.Fatalf("default list: want 3 sessions (finished hidden), got %d", len(active))
+	if len(active) != 4 {
+		t.Fatalf("default list: want 4 sessions (finished hidden), got %d", len(active))
 	}
 	for _, s := range active {
 		if s.Status == session.StateFinished {
@@ -54,8 +55,8 @@ func TestListSessionsFiltersFinished(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(all) != 4 {
-		t.Fatalf("--all list: want 4 sessions, got %d", len(all))
+	if len(all) != 5 {
+		t.Fatalf("--all list: want 5 sessions, got %d", len(all))
 	}
 }
 
@@ -112,23 +113,30 @@ func TestReapStale(t *testing.T) {
 	mk("alive", session.StateRunning, 1)
 	mk("dead", session.StateWaiting, 2)
 	mk("noident", session.StateRunning, 0) // un-probeable: must be skipped
-	mk("done", session.StateFinished, 3)   // terminal: must be skipped
+	mk("done", session.StateFinished, 3)   // terminal (clean exit): must be skipped
+	mk("idledead", session.StateIdle, 4)   // between turns but process gone: must be reaped
+	mk("reaped", session.StateDead, 5)     // already dead (terminal): must be skipped
 
-	// Only pid 2 is reported dead; the callback must never see noident/done.
+	// pids 2 and 4 are reported dead. The callback must never see the un-probeable
+	// session or either terminal state (finished, dead).
 	reaped, err := st.ReapStale(ctx, "h", func(s session.Session) bool {
-		if s.PID == 0 || s.Status == session.StateFinished {
-			t.Errorf("callback received un-probeable/terminal session %q", s.ID)
+		if s.PID == 0 || s.Status == session.StateFinished || s.Status == session.StateDead {
+			t.Errorf("callback received un-probeable/terminal session %q (%s)", s.ID, s.Status)
 		}
-		return s.PID == 2
+		return s.PID == 2 || s.PID == 4
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reaped) != 1 || reaped[0].ID != "dead" {
-		t.Fatalf("want only [dead] reaped, got %+v", reaped)
+	reapedIDs := map[string]bool{}
+	for _, s := range reaped {
+		reapedIDs[s.ID] = true
+		if s.Status != session.StateDead {
+			t.Errorf("reaped session %q status = %q, want %q", s.ID, s.Status, session.StateDead)
+		}
 	}
-	if reaped[0].Status != session.StateDead {
-		t.Errorf("reaped session status = %q, want %q", reaped[0].Status, session.StateDead)
+	if len(reaped) != 2 || !reapedIDs["dead"] || !reapedIDs["idledead"] {
+		t.Fatalf("want [dead idledead] reaped, got %+v", reaped)
 	}
 
 	all, err := st.ListSessions(ctx, true)
@@ -141,6 +149,9 @@ func TestReapStale(t *testing.T) {
 	}
 	if got["dead"] != session.StateDead {
 		t.Errorf("dead session: want %q, got %q", session.StateDead, got["dead"])
+	}
+	if got["idledead"] != session.StateDead {
+		t.Errorf("idle-but-gone session: want %q, got %q", session.StateDead, got["idledead"])
 	}
 	if got["alive"] != session.StateRunning {
 		t.Errorf("alive session wrongly changed to %q", got["alive"])

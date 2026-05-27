@@ -62,7 +62,6 @@ func Run(_ []string) error {
 		store:  st,
 		hostID: hostname,
 		sinks: []alert.Sink{
-			alert.NotifySend{},
 			alert.CountFile{
 				Path: filepath.Join(stateDir, "waiting-count"),
 				Count: func() (int, error) {

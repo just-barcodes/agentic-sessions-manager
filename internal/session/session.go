@@ -9,8 +9,8 @@ type State string
 const (
 	StateRunning  State = "running"
 	StateWaiting  State = "waiting"
-	StateIdle     State = "idle"
-	StateFinished State = "finished"
+	StateIdle     State = "idle"     // alive but between turns; set by Stop. Also set manually via `sm mark`.
+	StateFinished State = "finished" // session terminated cleanly; set only by SessionEnd.
 	StateFailed   State = "failed"
 	StateDead     State = "dead" // agent process gone without a clean stop; set by the reaper.
 )
@@ -33,6 +33,8 @@ type EventKind string
 
 const (
 	EventSessionStart EventKind = "session_start"
+	EventUserPrompt   EventKind = "user_prompt"  // user submitted a prompt; a turn is starting
+	EventToolUse      EventKind = "tool_use"     // a tool invocation began; the agent is working
 	EventNotification EventKind = "notification" // agent waiting for input or permission
 	EventStop         EventKind = "stop"         // end of a response turn
 	EventSessionEnd   EventKind = "session_end"  // session terminated (clean exit)
@@ -56,11 +58,13 @@ type Event struct {
 // an event of the given kind. The empty string means "no state change".
 func NextState(k EventKind) State {
 	switch k {
-	case EventSessionStart, EventNote:
+	case EventSessionStart, EventUserPrompt, EventToolUse, EventNote:
 		return StateRunning
 	case EventNotification:
 		return StateWaiting
-	case EventStop, EventSessionEnd:
+	case EventStop:
+		return StateIdle
+	case EventSessionEnd:
 		return StateFinished
 	case EventFail:
 		return StateFailed
