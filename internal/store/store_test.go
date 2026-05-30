@@ -93,6 +93,59 @@ func TestListSessionsReturnsIdentity(t *testing.T) {
 	}
 }
 
+// TestListSessionsLastPrompt verifies LastPrompt is derived from the most
+// recent user_prompt event, ignoring other event kinds and older prompts.
+func TestListSessionsLastPrompt(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "sm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+	now := time.Now()
+	if err := st.CreateSession(ctx, session.Session{
+		ID: "s", Agent: "claude", CWD: "/tmp", HostID: "h",
+		StartedAt: now, LastEventAt: now, Status: session.StateWaiting,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// "with" has prompts, latest wins; "none" has only a non-prompt event.
+	if err := st.CreateSession(ctx, session.Session{
+		ID: "none", Agent: "claude", CWD: "/tmp", HostID: "h",
+		StartedAt: now, LastEventAt: now, Status: session.StateWaiting,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ev := func(id, kind string, ts time.Time, payload map[string]any) {
+		if err := st.AppendEvent(ctx, session.Event{
+			SessionID: id, Kind: session.EventKind(kind), Timestamp: ts, Payload: payload,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ev("s", "user_prompt", now.Add(-2*time.Minute), map[string]any{"prompt": "old prompt"})
+	ev("s", "tool_use", now.Add(-1*time.Minute), map[string]any{"name": "Bash"})
+	ev("s", "user_prompt", now, map[string]any{"prompt": "newest prompt"})
+	ev("none", "tool_use", now, map[string]any{"name": "Read"})
+
+	all, err := st.ListSessions(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, s := range all {
+		got[s.ID] = s.LastPrompt
+	}
+	if got["s"] != "newest prompt" {
+		t.Errorf("LastPrompt = %q, want %q", got["s"], "newest prompt")
+	}
+	if got["none"] != "" {
+		t.Errorf("session with no user_prompt: LastPrompt = %q, want empty", got["none"])
+	}
+}
+
 func TestReapStale(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "sm.db"))
 	if err != nil {

@@ -27,6 +27,11 @@ type Session struct {
 	PID         int    // OS pid of the agent process; 0 when not captured.
 	PIDStart    uint64 // PID's /proc start time, used to detect pid reuse.
 	BootID      string // boot id when PID was captured.
+
+	// LastPrompt is the text of the most recent user prompt, derived from
+	// events rather than stored on the row. Only ListSessions populates it;
+	// other lookups leave it empty.
+	LastPrompt string `json:",omitempty"`
 }
 
 type EventKind string

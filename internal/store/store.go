@@ -130,14 +130,20 @@ func (s *Store) AppendEvent(ctx context.Context, e session.Event) error {
 // includeFinished is false, sessions in the finished state are omitted.
 func (s *Store) ListSessions(ctx context.Context, includeFinished bool) ([]session.Session, error) {
 	query := `
-		SELECT id, agent, native_id, cwd, host_id, started_at, last_event_at, status, pid, pid_start, boot_id
-		FROM sessions`
-	var args []any
+		SELECT s.id, s.agent, s.native_id, s.cwd, s.host_id, s.started_at, s.last_event_at, s.status, s.pid, s.pid_start, s.boot_id,
+			COALESCE((
+				SELECT json_extract(e.payload, '$.prompt')
+				FROM events e
+				WHERE e.session_id = s.id AND e.kind = ?
+				ORDER BY e.ts DESC, e.id DESC LIMIT 1
+			), '') AS last_prompt
+		FROM sessions s`
+	args := []any{string(session.EventUserPrompt)}
 	if !includeFinished {
-		query += ` WHERE status NOT IN (?, ?)`
+		query += ` WHERE s.status NOT IN (?, ?)`
 		args = append(args, string(session.StateFinished), string(session.StateDead))
 	}
-	query += ` ORDER BY last_event_at DESC`
+	query += ` ORDER BY s.last_event_at DESC`
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -151,7 +157,7 @@ func (s *Store) ListSessions(ctx context.Context, includeFinished bool) ([]sessi
 		var startedAt, lastEventAt int64
 		var status string
 		if err := rows.Scan(&sess.ID, &sess.Agent, &sess.NativeID, &sess.CWD, &sess.HostID,
-			&startedAt, &lastEventAt, &status, &sess.PID, &sess.PIDStart, &sess.BootID); err != nil {
+			&startedAt, &lastEventAt, &status, &sess.PID, &sess.PIDStart, &sess.BootID, &sess.LastPrompt); err != nil {
 			return nil, err
 		}
 		sess.StartedAt = time.Unix(startedAt, 0)

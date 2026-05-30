@@ -59,6 +59,7 @@ type claudeInput struct {
 	HookEventName string `json:"hook_event_name"`
 	CWD           string `json:"cwd"`
 	Reason        string `json:"reason"` // SessionEnd: clear|logout|prompt_input_exit|other
+	Prompt        string `json:"prompt"` // UserPromptSubmit: the submitted prompt text
 }
 
 func runClaude(r io.Reader) error {
@@ -83,6 +84,9 @@ func runClaude(r io.Reader) error {
 	}
 	if in.Reason != "" {
 		e.Payload["reason"] = in.Reason
+	}
+	if in.Prompt != "" {
+		e.Payload["prompt"] = in.Prompt
 	}
 	attachIdentity(&e)
 
