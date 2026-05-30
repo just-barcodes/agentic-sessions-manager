@@ -150,5 +150,3 @@ next sweep.
   `PreToolUse` for the full version.
 - `internal/cli/cli.go:160` — `parseState` for `sm mark` (idle remains a valid
   manual override).
-</content>
-</invoke>

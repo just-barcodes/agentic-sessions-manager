@@ -5,7 +5,6 @@
 //	sm daemon              # run the long-running manager (systemd --user)
 //	sm ls [--all]          # list active sessions (--all/-a includes finished)
 //	sm show <id>           # details + recent events
-//	sm watch               # tail the live event stream
 //	sm mark <id> <state>   # override session state (e.g. idle)
 //	sm status              # JSON snapshot for walker / scripts
 //	sm focus <id>          # raise the window/pane hosting a session's agent
@@ -37,8 +36,6 @@ func main() {
 		err = cli.List(args)
 	case "show":
 		err = cli.Show(args)
-	case "watch":
-		err = cli.Watch(args)
 	case "mark":
 		err = cli.Mark(args)
 	case "status":
@@ -60,5 +57,5 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: sm <daemon|ls|show|watch|mark|status|focus|emit|hook> [args...]")
+	fmt.Fprintln(os.Stderr, "usage: sm <daemon|ls|show|mark|status|focus|emit|hook> [args...]")
 }

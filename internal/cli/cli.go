@@ -115,11 +115,6 @@ func payloadInline(p map[string]any) string {
 	return string(b)
 }
 
-func Watch(_ []string) error {
-	// TODO: subscribe to bus.SubjectEventAll and print each event as JSON.
-	return errors.New("not implemented")
-}
-
 func Mark(args []string) error {
 	if len(args) < 2 {
 		return errors.New("usage: sm mark <id> <state>")
