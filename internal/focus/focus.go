@@ -21,8 +21,8 @@ import (
 // Client is the subset of a `hyprctl clients -j` entry that focus needs. The
 // pid is the window owner — the terminal emulator, not the agent inside it.
 type Client struct {
-	Address string
-	PID     int
+	Address string `json:"address"`
+	PID     int    `json:"pid"`
 }
 
 // System is the set of OS/window-manager interactions Focus depends on. It is a

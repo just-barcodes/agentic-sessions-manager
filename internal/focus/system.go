@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/just-barcodes/agentic-sessions-manager/internal/liveness"
 )
 
 // RealSystem wires Focus to the live host: /proc for process inspection,
@@ -21,13 +23,12 @@ func RealSystem() System {
 	}
 }
 
-// ancestors returns pid followed by its parent chain, stopping at init. The
-// /proc/<pid>/stat parsing mirrors internal/liveness; kept local to avoid
-// widening that package's API for a second consumer.
+// ancestors returns pid followed by its parent chain, stopping at init. It
+// reuses liveness.ParentPID so there is a single /proc/<pid>/stat parser.
 func ancestors(pid int) ([]int, error) {
 	chain := []int{pid}
 	for range 32 {
-		ppid, err := parentPID(pid)
+		ppid, err := liveness.ParentPID(pid)
 		if err != nil {
 			return nil, err
 		}
@@ -38,26 +39,6 @@ func ancestors(pid int) ([]int, error) {
 		pid = ppid
 	}
 	return chain, nil
-}
-
-func parentPID(pid int) (int, error) {
-	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-	if err != nil {
-		return 0, err
-	}
-	// Fields 1 (pid) and 2 (comm) are dropped: comm may contain spaces or
-	// parentheses, so split everything after the final ')'. Field 4 (ppid) is
-	// then the second field of the remainder.
-	s := string(b)
-	i := strings.LastIndexByte(s, ')')
-	if i < 0 {
-		return 0, fmt.Errorf("malformed stat for pid %d", pid)
-	}
-	f := strings.Fields(s[i+1:])
-	if len(f) < 2 {
-		return 0, fmt.Errorf("malformed stat for pid %d", pid)
-	}
-	return strconv.Atoi(f[1])
 }
 
 func environ(pid int) (map[string]string, error) {
@@ -79,16 +60,9 @@ func hyprlandClients() ([]Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("hyprctl clients: %w", err)
 	}
-	var raw []struct {
-		Address string `json:"address"`
-		PID     int    `json:"pid"`
-	}
-	if err := json.Unmarshal(out, &raw); err != nil {
+	var clients []Client
+	if err := json.Unmarshal(out, &clients); err != nil {
 		return nil, fmt.Errorf("parse hyprctl clients: %w", err)
-	}
-	clients := make([]Client, len(raw))
-	for i, r := range raw {
-		clients[i] = Client{Address: r.Address, PID: r.PID}
 	}
 	return clients, nil
 }

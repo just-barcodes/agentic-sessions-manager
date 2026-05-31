@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -51,6 +53,16 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
+	// modernc/sqlite has no concurrent writer. Pin to a single connection and
+	// enable WAL + a busy timeout so the daemon and CLI processes, which each
+	// open their own *Store against the same file, don't collide with SQLITE_BUSY.
+	db.SetMaxOpenConns(1)
+	for _, pragma := range []string{"PRAGMA journal_mode=WAL", "PRAGMA busy_timeout=5000"} {
+		if _, err := db.ExecContext(context.Background(), pragma); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("set pragma: %w", err)
+		}
+	}
 	if _, err := db.ExecContext(context.Background(), schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
@@ -59,8 +71,27 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	// The database holds prompt text and cwd paths; keep it owner-only.
+	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+		_ = db.Close()
+		return nil, fmt.Errorf("chmod db: %w", err)
+	}
 	return &Store{db: db}, nil
 }
+
+// DataDir returns the sm data directory, honoring XDG_DATA_HOME and falling back
+// to ~/.local/share/sm. Both the daemon and the CLI resolve the database through
+// here so they always agree on its location.
+func DataDir() string {
+	if v := os.Getenv("XDG_DATA_HOME"); v != "" {
+		return filepath.Join(v, "sm")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local/share", "sm")
+}
+
+// DefaultDBPath is the path to the sm database within DataDir.
+func DefaultDBPath() string { return filepath.Join(DataDir(), "sm.db") }
 
 // migrate applies additive column migrations. Re-running is safe: adding a
 // column that already exists errors with "duplicate column name", which we
@@ -140,8 +171,13 @@ func (s *Store) ListSessions(ctx context.Context, includeFinished bool) ([]sessi
 		FROM sessions s`
 	args := []any{string(session.EventUserPrompt)}
 	if !includeFinished {
-		query += ` WHERE s.status NOT IN (?, ?)`
-		args = append(args, string(session.StateFinished), string(session.StateDead))
+		terminal := session.TerminalStates()
+		ph := make([]string, len(terminal))
+		for i, t := range terminal {
+			ph[i] = "?"
+			args = append(args, string(t))
+		}
+		query += ` WHERE s.status NOT IN (` + strings.Join(ph, ", ") + `)`
 	}
 	query += ` ORDER BY s.last_event_at DESC`
 
@@ -184,11 +220,18 @@ func (s *Store) CountByStatus(ctx context.Context, status session.State) (int, e
 // was actually last seen. Returns the reaped sessions (with Status set to dead)
 // so callers can react.
 func (s *Store) ReapStale(ctx context.Context, hostID string, isDead func(session.Session) bool) ([]session.Session, error) {
+	terminal := session.TerminalStates()
+	ph := make([]string, len(terminal))
+	qargs := []any{hostID}
+	for i, t := range terminal {
+		ph[i] = "?"
+		qargs = append(qargs, string(t))
+	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, agent, cwd, host_id, last_event_at, pid, pid_start, boot_id
 		FROM sessions
-		WHERE host_id = ? AND pid != 0 AND status NOT IN (?, ?)`,
-		hostID, string(session.StateFinished), string(session.StateDead))
+		WHERE host_id = ? AND pid != 0 AND status NOT IN (`+strings.Join(ph, ", ")+`)`,
+		qargs...)
 	if err != nil {
 		return nil, err
 	}

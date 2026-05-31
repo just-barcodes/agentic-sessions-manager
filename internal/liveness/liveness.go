@@ -37,7 +37,7 @@ func Capture() (Identity, bool) {
 	}
 	pid := os.Getpid()
 	for range 16 {
-		ppid, err := parentPID(pid)
+		ppid, err := ParentPID(pid)
 		if err != nil || ppid <= 1 {
 			return Identity{}, false
 		}
@@ -104,7 +104,9 @@ func statFields(pid int) ([]string, error) {
 	return strings.Fields(s[i+1:]), nil
 }
 
-func parentPID(pid int) (int, error) {
+// ParentPID returns pid's parent pid from /proc/<pid>/stat. Exported so the
+// focus package can reuse the single /proc stat parser rather than duplicating it.
+func ParentPID(pid int) (int, error) {
 	f, err := statFields(pid)
 	if err != nil {
 		return 0, err

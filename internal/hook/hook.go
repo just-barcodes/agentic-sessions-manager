@@ -63,20 +63,30 @@ type claudeInput struct {
 }
 
 func runClaude(r io.Reader) error {
+	e, ok, err := parseClaude(r, time.Now)
+	if err != nil || !ok {
+		return err
+	}
+	attachIdentity(&e)
+	return publish(e)
+}
+
+// parseClaude decodes Claude Code hook JSON into a session event. ok is false
+// for events we don't care about. now is injected so timestamps are testable.
+func parseClaude(r io.Reader, now func() time.Time) (session.Event, bool, error) {
 	var in claudeInput
 	if err := json.NewDecoder(r).Decode(&in); err != nil {
-		return fmt.Errorf("decode claude hook input: %w", err)
+		return session.Event{}, false, fmt.Errorf("decode claude hook input: %w", err)
 	}
 	kind, ok := claudeKind(in.HookEventName)
 	if !ok {
-		return nil // event we don't care about — succeed silently
+		return session.Event{}, false, nil
 	}
-
 	e := session.Event{
 		Agent:     "claude",
 		NativeID:  in.SessionID,
 		Kind:      kind,
-		Timestamp: time.Now(),
+		Timestamp: now(),
 		Payload:   map[string]any{},
 	}
 	if in.CWD != "" {
@@ -88,8 +98,11 @@ func runClaude(r io.Reader) error {
 	if in.Prompt != "" {
 		e.Payload["prompt"] = in.Prompt
 	}
-	attachIdentity(&e)
+	return e, true, nil
+}
 
+// publish connects to the bus, emits e, and closes the connection.
+func publish(e session.Event) error {
 	b, err := bus.Connect(bus.DefaultURL)
 	if err != nil {
 		return fmt.Errorf("nats connect: %w", err)
@@ -131,35 +144,39 @@ type opencodeInput struct {
 }
 
 func runOpencode(r io.Reader) error {
+	e, ok, err := parseOpencode(r, time.Now)
+	if err != nil || !ok {
+		return err
+	}
+	attachIdentity(&e)
+	return publish(e)
+}
+
+// parseOpencode decodes an opencode plugin event into a session event. ok is
+// false for events we ignore or that lack a session id. now is injected so
+// timestamps are testable.
+func parseOpencode(r io.Reader, now func() time.Time) (session.Event, bool, error) {
 	var in opencodeInput
 	if err := json.NewDecoder(r).Decode(&in); err != nil {
-		return fmt.Errorf("decode opencode hook input: %w", err)
+		return session.Event{}, false, fmt.Errorf("decode opencode hook input: %w", err)
 	}
 	kind, ok := opencodeKind(in.Type)
 	if !ok {
-		return nil
+		return session.Event{}, false, nil
 	}
 	if in.Properties.SessionID == "" {
-		return nil
+		return session.Event{}, false, nil
 	}
-
 	e := session.Event{
 		Agent:     "opencode",
 		NativeID:  in.Properties.SessionID,
 		Kind:      kind,
-		Timestamp: time.Now(),
+		Timestamp: now(),
 	}
 	if in.Properties.Info != nil && in.Properties.Info.Directory != "" {
 		e.Payload = map[string]any{"cwd": in.Properties.Info.Directory}
 	}
-	attachIdentity(&e)
-
-	b, err := bus.Connect(bus.DefaultURL)
-	if err != nil {
-		return fmt.Errorf("nats connect: %w", err)
-	}
-	defer b.Close()
-	return b.Publish(e)
+	return e, true, nil
 }
 
 // opencodeKind maps opencode event type names to session.EventKind.

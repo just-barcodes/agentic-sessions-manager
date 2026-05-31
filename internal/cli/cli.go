@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -154,13 +153,7 @@ func Mark(args []string) error {
 }
 
 func parseState(s string) (session.State, bool) {
-	st := session.State(s)
-	switch st {
-	case session.StateRunning, session.StateWaiting, session.StateIdle,
-		session.StateFinished, session.StateFailed:
-		return st, true
-	}
-	return "", false
+	return session.ParseState(s)
 }
 
 // Focus raises the terminal window (and tmux pane) hosting a session's agent
@@ -250,12 +243,7 @@ func Emit(args []string) error {
 }
 
 func openStore() (*store.Store, error) {
-	dataDir := os.Getenv("XDG_DATA_HOME")
-	if dataDir == "" {
-		home, _ := os.UserHomeDir()
-		dataDir = filepath.Join(home, ".local/share")
-	}
-	return store.Open(filepath.Join(dataDir, "sm", "sm.db"))
+	return store.Open(store.DefaultDBPath())
 }
 
 func short(id string) string {

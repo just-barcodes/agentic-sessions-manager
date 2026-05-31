@@ -2,7 +2,10 @@
 // It has no I/O dependencies and is safe to import from any other package.
 package session
 
-import "time"
+import (
+	"slices"
+	"time"
+)
 
 type State string
 
@@ -75,4 +78,28 @@ func NextState(k EventKind) State {
 		return StateFailed
 	}
 	return ""
+}
+
+// IsTerminal reports whether s is an end state: a session that has finished
+// cleanly or been reaped. Terminal sessions are hidden from the default list
+// view and skipped by the reaper.
+func IsTerminal(s State) bool {
+	return slices.Contains(TerminalStates(), s)
+}
+
+// TerminalStates is the single source of truth for which states are terminal.
+// The store builds its filters from this so a new terminal state propagates
+// everywhere automatically.
+func TerminalStates() []State {
+	return []State{StateFinished, StateDead}
+}
+
+// ParseState validates a user-supplied state string for `sm mark`. Only states
+// a user may set manually are accepted; StateDead is reaper-only and rejected.
+func ParseState(s string) (State, bool) {
+	switch State(s) {
+	case StateRunning, StateWaiting, StateIdle, StateFinished, StateFailed:
+		return State(s), true
+	}
+	return "", false
 }

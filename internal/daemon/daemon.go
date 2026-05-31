@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -29,13 +30,13 @@ import (
 const sweepInterval = 30 * time.Second
 
 func Run(_ []string) error {
-	dataDir := xdgDir("XDG_DATA_HOME", ".local/share")
+	dataDir := store.DataDir()
 	stateDir := xdgDir("XDG_STATE_HOME", ".local/state")
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return err
 	}
 
-	st, err := store.Open(filepath.Join(dataDir, "sm.db"))
+	st, err := store.Open(store.DefaultDBPath())
 	if err != nil {
 		return err
 	}
@@ -65,7 +66,9 @@ func Run(_ []string) error {
 			alert.CountFile{
 				Path: filepath.Join(stateDir, "waiting-count"),
 				Count: func() (int, error) {
-					return st.CountByStatus(context.Background(), session.StateWaiting)
+					ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+					defer cancel()
+					return st.CountByStatus(ctx, session.StateWaiting)
 				},
 			},
 		},
@@ -73,6 +76,7 @@ func Run(_ []string) error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+	h.ctx = ctx
 
 	if err := b.Subscribe(ctx, h.handle); err != nil {
 		return err
@@ -87,6 +91,7 @@ func Run(_ []string) error {
 // concurrent processing, and ordering matters for state transitions.
 type handler struct {
 	mu     sync.Mutex
+	ctx    context.Context // base context for store ops; set before Subscribe
 	store  *store.Store
 	hostID string
 	sinks  []alert.Sink
@@ -95,32 +100,41 @@ type handler struct {
 func (h *handler) handle(e session.Event) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(h.ctx, 5*time.Second)
+	defer cancel()
 
 	if e.Timestamp.IsZero() {
 		e.Timestamp = time.Now()
 	}
 	if err := h.resolveSession(ctx, &e); err != nil {
-		return // TODO: log
+		log.Printf("daemon: resolve session: %v", err)
+		return
 	}
-	_ = h.store.AppendEvent(ctx, e)
+	if err := h.store.AppendEvent(ctx, e); err != nil {
+		log.Printf("daemon: append event: %v", err)
+	}
 
 	next := session.NextState(e.Kind)
 	if next == "" {
 		return
 	}
-	_ = h.store.UpdateStatus(ctx, e.SessionID, next, e.Timestamp)
+	if err := h.store.UpdateStatus(ctx, e.SessionID, next, e.Timestamp); err != nil {
+		log.Printf("daemon: update status: %v", err)
+		return // don't fan out a state change we failed to persist
+	}
 
 	sess := session.Session{
 		ID:       e.SessionID,
 		Agent:    e.Agent,
 		NativeID: e.NativeID,
-		CWD:      str(e.Payload["cwd"]),
+		CWD:      asString(e.Payload["cwd"]),
 		HostID:   h.hostID,
 		Status:   next,
 	}
 	for _, sink := range h.sinks {
-		_ = sink.OnStateChange(sess)
+		if err := sink.OnStateChange(sess); err != nil {
+			log.Printf("daemon: sink: %v", err)
+		}
 	}
 }
 
@@ -151,11 +165,14 @@ func (h *handler) sweep(ctx context.Context) {
 		return !liveness.Alive(liveness.Identity{PID: s.PID, Start: s.PIDStart, BootID: s.BootID})
 	})
 	if err != nil {
-		return // TODO: log
+		log.Printf("daemon: reap stale: %v", err)
+		return
 	}
 	for _, sess := range reaped {
 		for _, sink := range h.sinks {
-			_ = sink.OnStateChange(sess)
+			if err := sink.OnStateChange(sess); err != nil {
+				log.Printf("daemon: sink: %v", err)
+			}
 		}
 	}
 }
@@ -181,7 +198,7 @@ func (h *handler) resolveSession(ctx context.Context, e *session.Event) error {
 		ID:          e.SessionID,
 		Agent:       e.Agent,
 		NativeID:    e.NativeID,
-		CWD:         str(e.Payload["cwd"]),
+		CWD:         asString(e.Payload["cwd"]),
 		HostID:      h.hostID,
 		StartedAt:   e.Timestamp,
 		LastEventAt: e.Timestamp,
@@ -192,7 +209,7 @@ func (h *handler) resolveSession(ctx context.Context, e *session.Event) error {
 	})
 }
 
-func str(v any) string {
+func asString(v any) string {
 	s, _ := v.(string)
 	return s
 }
@@ -213,7 +230,7 @@ func startEmbeddedNATS(host string, port int) (*natsserver.Server, error) {
 		NoLog:  true,
 		NoSigs: true, // the daemon owns signal handling
 	}
-	if port <= 1024 || port > 65536 {
+	if port <= 1024 || port > 65535 {
 		return nil, fmt.Errorf("create nats server: invalid port number")
 	}
 	ns, err := natsserver.NewServer(opts)

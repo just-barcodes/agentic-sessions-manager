@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 
 	"github.com/nats-io/nats.go"
 
@@ -41,7 +42,8 @@ func (b *Bus) Subscribe(ctx context.Context, handler func(session.Event)) error 
 	sub, err := b.conn.Subscribe(SubjectEventAll, func(m *nats.Msg) {
 		var e session.Event
 		if err := json.Unmarshal(m.Data, &e); err != nil {
-			return // TODO: log decode failures
+			log.Printf("bus: decode event: %v", err)
+			return
 		}
 		handler(e)
 	})
