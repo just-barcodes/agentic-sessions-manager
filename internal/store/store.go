@@ -139,11 +139,27 @@ func (s *Store) FindSessionByNative(ctx context.Context, agent, nativeID string)
 	return id, err
 }
 
+// UpdateStatus applies a state transition, but only if the event is at least as
+// recent as the last one already applied. The recency guard (ts >= last_event_at)
+// drops events that arrive out of order — e.g. a stale notification landing after
+// a newer tool_use — so a late event cannot rewind the session's state.
 func (s *Store) UpdateStatus(ctx context.Context, id string, status session.State, ts time.Time) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE sessions SET status = ?, last_event_at = ? WHERE id = ?`,
-		string(status), ts.Unix(), id)
+		`UPDATE sessions SET status = ?, last_event_at = ? WHERE id = ? AND ? >= last_event_at`,
+		string(status), ts.Unix(), id, ts.Unix())
 	return err
+}
+
+// CurrentStatus returns the session's current state. It returns "" with no error
+// when the session is unknown, so callers can treat that as "no current state".
+func (s *Store) CurrentStatus(ctx context.Context, id string) (session.State, error) {
+	var status string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT status FROM sessions WHERE id = ?`, id).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return session.State(status), err
 }
 
 func (s *Store) AppendEvent(ctx context.Context, e session.Event) error {

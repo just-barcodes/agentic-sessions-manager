@@ -60,6 +60,45 @@ func TestListSessionsFiltersFinished(t *testing.T) {
 	}
 }
 
+// TestUpdateStatusRecencyGuard verifies a stale event (older timestamp) cannot
+// overwrite state set by a newer one, while an equal-or-newer event still applies.
+func TestUpdateStatusRecencyGuard(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "sm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+	t0 := time.Unix(1_000_000, 0)
+	if err := st.CreateSession(ctx, session.Session{
+		ID: "s", Agent: "claude", CWD: "/tmp", HostID: "h",
+		StartedAt: t0, LastEventAt: t0, Status: session.StateWaiting,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A newer tool_use moves it to running.
+	if err := st.UpdateStatus(ctx, "s", session.StateRunning, t0.Add(10*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	// A stale notification (earlier ts) must be ignored, not rewind to waiting.
+	if err := st.UpdateStatus(ctx, "s", session.StateWaiting, t0.Add(5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.CurrentStatus(ctx, "s"); got != session.StateRunning {
+		t.Fatalf("stale event rewound state: got %q, want running", got)
+	}
+
+	// An equal-timestamp event still applies (ties resolve to last writer).
+	if err := st.UpdateStatus(ctx, "s", session.StateIdle, t0.Add(10*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.CurrentStatus(ctx, "s"); got != session.StateIdle {
+		t.Fatalf("equal-ts event did not apply: got %q, want idle", got)
+	}
+}
+
 // TestListSessionsReturnsIdentity guards the pid/pid_start/boot_id round trip:
 // ListSessions once selected neither, so `sm status --json` and `sm ls` reported
 // every session as pid 0 even when the fingerprint was captured.

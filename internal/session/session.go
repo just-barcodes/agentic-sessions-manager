@@ -62,8 +62,25 @@ type Event struct {
 	BootID    string         `json:"boot_id,omitempty"`   // boot id when PID was captured
 }
 
+// Claude Code's Notification hook fires for several distinct sub-events,
+// reported in the payload's notification_type field. They do not all mean "the
+// agent is blocked": elicitation_complete/response fire when the user *answers*
+// a question (the agent is resuming), and auth_success is informational. Not
+// every Claude version populates notification_type (anthropics/claude-code#11964),
+// so an absent type falls back to the conservative "waiting".
+const (
+	NotifyPermission   = "permission_prompt"    // agent needs permission — blocked
+	NotifyIdle         = "idle_prompt"          // 60s idle, "waiting for your input"
+	NotifyAuthSuccess  = "auth_success"         // login completed — informational
+	NotifyElicitDialog = "elicitation_dialog"   // a question is shown — blocked
+	NotifyElicitDone   = "elicitation_complete" // the question was answered — resuming
+	NotifyElicitResp   = "elicitation_response" // the question was answered — resuming
+)
+
 // NextState returns the state a session should transition to after observing
 // an event of the given kind. The empty string means "no state change".
+// Notifications are not handled here because their meaning depends on the
+// notification_type payload — see Transition.
 func NextState(k EventKind) State {
 	switch k {
 	case EventSessionStart, EventUserPrompt, EventToolUse, EventNote:
@@ -102,4 +119,40 @@ func ParseState(s string) (State, bool) {
 		return State(s), true
 	}
 	return "", false
+}
+
+// Transition returns the state a session in state cur should move to after
+// observing e. "" means no change. Every event maps purely from its kind
+// (NextState) except Notification, whose meaning depends on its sub-type:
+//
+//   - answering a question (elicitation_complete/response) or completing auth
+//     means the agent is resuming → running;
+//   - a permission request or a shown question → waiting;
+//   - a 60s idle ping → waiting, unless the session is already running (a stale
+//     ping must not knock an active turn back to waiting — tool_use is
+//     authoritative while a turn is in flight);
+//   - an absent or unrecognised type → waiting (the safe default that preserves
+//     "agent asked → waiting" on Claude versions that omit notification_type).
+func Transition(cur State, e Event) State {
+	if e.Kind != EventNotification {
+		return NextState(e.Kind)
+	}
+	switch notifyType(e) {
+	case NotifyElicitDone, NotifyElicitResp, NotifyAuthSuccess:
+		return StateRunning
+	case NotifyPermission, NotifyElicitDialog:
+		return StateWaiting
+	case NotifyIdle:
+		if cur == StateRunning {
+			return ""
+		}
+		return StateWaiting
+	default:
+		return StateWaiting
+	}
+}
+
+func notifyType(e Event) string {
+	s, _ := e.Payload["notification_type"].(string)
+	return s
 }

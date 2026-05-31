@@ -55,11 +55,13 @@ func dispatch(args []string) error {
 // claudeInput is the subset of Claude Code's hook stdin JSON we use. Claude
 // fires hooks with at least these fields; ignore everything else.
 type claudeInput struct {
-	SessionID     string `json:"session_id"`
-	HookEventName string `json:"hook_event_name"`
-	CWD           string `json:"cwd"`
-	Reason        string `json:"reason"` // SessionEnd: clear|logout|prompt_input_exit|other
-	Prompt        string `json:"prompt"` // UserPromptSubmit: the submitted prompt text
+	SessionID        string `json:"session_id"`
+	HookEventName    string `json:"hook_event_name"`
+	CWD              string `json:"cwd"`
+	Reason           string `json:"reason"`            // SessionEnd: clear|logout|prompt_input_exit|other
+	Prompt           string `json:"prompt"`            // UserPromptSubmit: the submitted prompt text
+	Message          string `json:"message"`           // Notification: the human-readable message
+	NotificationType string `json:"notification_type"` // Notification: permission_prompt|idle_prompt|elicitation_*|auth_success
 }
 
 func runClaude(r io.Reader) error {
@@ -97,6 +99,12 @@ func parseClaude(r io.Reader, now func() time.Time) (session.Event, bool, error)
 	}
 	if in.Prompt != "" {
 		e.Payload["prompt"] = in.Prompt
+	}
+	if in.Message != "" {
+		e.Payload["message"] = in.Message
+	}
+	if in.NotificationType != "" {
+		e.Payload["notification_type"] = in.NotificationType
 	}
 	return e, true, nil
 }

@@ -114,7 +114,8 @@ func (h *handler) handle(e session.Event) {
 		log.Printf("daemon: append event: %v", err)
 	}
 
-	next := session.NextState(e.Kind)
+	cur, _ := h.store.CurrentStatus(ctx, e.SessionID)
+	next := session.Transition(cur, e)
 	if next == "" {
 		return
 	}

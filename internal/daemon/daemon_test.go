@@ -69,3 +69,41 @@ func TestSweepReapsAndRefreshesCount(t *testing.T) {
 		t.Errorf("waiting-count = %q after sweep, want 0", got)
 	}
 }
+
+// TestHandleAnswerResumesRunning reproduces the reported bug: the agent asks a
+// question (→ waiting) and the user answers, which must move the session back to
+// running rather than leaving it stuck in waiting. A stale idle ping arriving
+// afterwards must not rewind it.
+func TestHandleAnswerResumesRunning(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "sm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+	h := &handler{store: st, hostID: "h", ctx: ctx}
+	t0 := time.Unix(1_000_000, 0)
+	notif := func(typ string, dt time.Duration) session.Event {
+		return session.Event{
+			Agent: "claude", NativeID: "n", Kind: session.EventNotification,
+			Timestamp: t0.Add(dt),
+			Payload:   map[string]any{"notification_type": typ},
+		}
+	}
+
+	h.handle(notif(session.NotifyElicitDialog, 0))            // agent asks
+	h.handle(notif(session.NotifyElicitResp, time.Second))    // user answers
+	h.handle(notif(session.NotifyIdle, 500*time.Millisecond)) // stale idle ping (older ts)
+
+	all, err := st.ListSessions(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("want 1 session, got %d", len(all))
+	}
+	if all[0].Status != session.StateRunning {
+		t.Fatalf("after answering, status = %q, want running", all[0].Status)
+	}
+}
