@@ -68,8 +68,11 @@ func hyprlandClients() ([]Client, error) {
 }
 
 func hyprlandFocus(address string) error {
-	if err := exec.Command("hyprctl", "dispatch", "focuswindow", "address:"+address).Run(); err != nil {
-		return fmt.Errorf("hyprctl focuswindow %s: %w", address, err)
+	// hyprctl wraps the argument as `return hl.dispatch(<arg>)`, so it must be a
+	// dispatcher call. hl.dsp.focus follows the window to its workspace.
+	dispatch := fmt.Sprintf("hl.dsp.focus({window='address:%s'})", address)
+	if err := exec.Command("hyprctl", "dispatch", dispatch).Run(); err != nil {
+		return fmt.Errorf("hyprctl focus %s: %w", address, err)
 	}
 	return nil
 }

@@ -32,7 +32,7 @@ type System struct {
 	Ancestors   func(pid int) ([]int, error) // pid then its ancestors, nearest first
 	Environ     func(pid int) (map[string]string, error)
 	Clients     func() ([]Client, error)             // hyprctl clients -j
-	FocusWindow func(address string) error           // hyprctl dispatch focuswindow
+	FocusWindow func(address string) error           // raise window (follows it to its workspace)
 	Tmux        func(args ...string) (string, error) // run tmux, return stdout
 }
 
