@@ -66,7 +66,7 @@ Because `SessionEnd` is unreliable — it does not fire on `/clear` or `/exit` �
 
 NATS pub/sub on `localhost:4222`.
 
-- Subjects: `sm.session.<uuid>.event` (events from session), `sm.session.<uuid>.alert` (high-priority).
+- Subjects: `sm.session.<uuid>.event` (events from session).
 - NATS is overkill for single-host but chosen deliberately: zero rewrite when we later add cross-device support (just point hooks at a remote NATS).
 - The daemon runs an embedded NATS server (no separate install) for the MVP.
 
@@ -92,7 +92,7 @@ events  (id INTEGER PK, session_id TEXT, ts INTEGER, kind TEXT, payload JSON)
 
 On every state change the daemon updates the status surfaces:
 
-- **Walker / status bar** via a JSON endpoint (`sm status --json`) walker can read cheaply on demand, plus a count file at `~/.local/state/sm/waiting-count` updated on every state change for zero-cost bar polling. `sm focus <id>` jumps straight to a waiting session — see [Switching to a waiting session](#switching-to-a-waiting-session).
+- **Walker / status bar** via a JSON endpoint (`sm status`) walker can read cheaply on demand, plus a count file at `~/.local/state/sm/waiting-count` updated on every state change for zero-cost bar polling. `sm focus <id>` jumps straight to a waiting session — see [Switching to a waiting session](#switching-to-a-waiting-session).
 
 > Push notifications (previously `notify-send`) were removed pending a better design. The count file and `sm status` are the only surfaces today.
 
@@ -102,7 +102,7 @@ On every state change the daemon updates the status surfaces:
 sm ls                 # list all known sessions, one line each
 sm show <id>          # details + recent events for one session
 sm mark <id> idle     # manual state override
-sm status --json      # machine-readable summary for walker / scripts
+sm status             # machine-readable (JSON) summary for walker / scripts
 sm focus <id>         # raise the terminal window/tmux pane hosting the session
 ```
 
@@ -128,7 +128,7 @@ Runs as a systemd **user** service: `systemctl --user start sm`. Starts on login
 ## Technical details
 
 - Language: Go.
-- Storage: SQLite (`modernc.org/sqlite` or `mattn/go-sqlite3`).
+- Storage: SQLite (`modernc.org/sqlite`).
 - Transport: embedded NATS (`nats-server` as a library).
 - Hook scripts: small shell snippets shipped with the project; user adds them to their Claude Code / opencode config.
 - Modular boundaries: agent adapters (claude, opencode, future) live behind a thin interface so adding a new agent only means writing hook scripts + an event mapper.

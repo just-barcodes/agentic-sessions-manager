@@ -26,7 +26,7 @@ These are not edge cases — under normal Claude usage they are the common case.
 
 State is **edge-driven and sticky**: it is "the last lifecycle event we saw,"
 held until the next event. There is no heartbeat and no "actively computing"
-signal. The whole mapping is `session.NextState` (`internal/session/session.go:57`):
+signal. The whole mapping is `session.NextState` (`internal/session/session.go:84`):
 
 | Event kind                  | → State    |
 |-----------------------------|------------|
@@ -42,13 +42,13 @@ Three structural faults follow from this table:
 ### 1. `Stop` is per-turn, but maps to the terminal-sounding `finished`
 
 Claude's `Stop` hook fires at the **end of every response turn**, not at
-session end (`internal/hook/hook.go:103`). So a healthy session reads
+session end (`internal/hook/hook.go:122`). So a healthy session reads
 `finished` the moment each turn ends. Nothing maps a mid-session turn back to
 `running` (`SessionStart` fires only once), so after turn one a Claude session
 is effectively `finished` for the rest of its life, blipping to `waiting` only
 on permission prompts.
 
-`sm ls` without `--all` hides `finished` (`internal/store/store.go:136`), so
+`sm ls` without `--all` hides `finished` (`internal/store/store.go:178`), so
 those live sessions vanish from the default view. `Stop` (alive, between turns)
 and `SessionEnd` (genuinely terminated) are also indistinguishable once both
 land on `finished`.
@@ -64,7 +64,7 @@ never passes back through `running`.
 ### 3. The reaper only probes `running`/`waiting`
 
 `ReapStale` filters `status IN ('running','waiting')`
-(`internal/store/store.go:181`). Because fault #1 parks most sessions in
+(`internal/store/store.go:238`). Because fault #1 parks most sessions in
 `finished`, the reaper never looks at them — so a session that truly died is
 mislabeled `finished` forever, never `dead`. The same blind spot strands
 `idle` and `failed` sessions.
@@ -75,7 +75,7 @@ Secondary issues:
   one genuinely-terminal signal is often missing. (Already noted in `NOTES.md`.)
 - `failed` is opencode-only (`session.error`); Claude has no failure hook, so
   Claude errors surface as `finished` or `dead`.
-- `idle` is manual-only (`sm mark`, `internal/cli/cli.go:122`) and never
+- `idle` is manual-only (`sm mark`, `internal/cli/cli.go:117`) and never
   auto-cleared or auto-reaped, so it goes stale.
 - pid liveness tracks the first non-shell ancestor of the hook
   (`internal/liveness/liveness.go:44`). If that ancestor is a wrapper, tmux
@@ -141,12 +141,12 @@ next sweep.
 
 ## Affected code
 
-- `internal/session/session.go:57` — `NextState` mapping; add `user_prompt`,
+- `internal/session/session.go:84` — `NextState` mapping; add `user_prompt`,
   `tool_use` kinds if doing the full version.
-- `internal/store/store.go:181` — reaper status filter.
-- `internal/store/store.go:136` — `sm ls` default filter (already excludes
+- `internal/store/store.go:238` — reaper status filter.
+- `internal/store/store.go:178` — `sm ls` default filter (already excludes
   `finished` + `dead`; verify it still reads correctly under the new meaning).
-- `internal/hook/hook.go:97` — Claude event→kind map; add `UserPromptSubmit`,
+- `internal/hook/hook.go:122` — Claude event→kind map; add `UserPromptSubmit`,
   `PreToolUse` for the full version.
-- `internal/cli/cli.go:160` — `parseState` for `sm mark` (idle remains a valid
+- `internal/cli/cli.go:155` — `parseState` for `sm mark` (idle remains a valid
   manual override).
