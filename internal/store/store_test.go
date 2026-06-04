@@ -212,16 +212,28 @@ func TestReapStale(t *testing.T) {
 	mk("idledead", session.StateIdle, 4)   // between turns but process gone: must be reaped
 	mk("reaped", session.StateDead, 5)     // already dead (terminal): must be skipped
 
-	// pids 2 and 4 are reported dead. The callback must never see the un-probeable
-	// session or either terminal state (finished, dead).
+	// pids 2 and 4 are reported dead. ReapStale must offer isDead only the
+	// probeable, non-terminal sessions: never the un-probeable one (pid 0) or
+	// either terminal state (finished, dead). We record which IDs the callback
+	// receives and assert on them below — checking s.Status inside the callback
+	// would be a no-op because ReapStale's SELECT never loads the status column.
+	probed := map[string]bool{}
 	reaped, err := st.ReapStale(ctx, "h", func(s session.Session) bool {
-		if s.PID == 0 || s.Status == session.StateFinished || s.Status == session.StateDead {
-			t.Errorf("callback received un-probeable/terminal session %q (%s)", s.ID, s.Status)
-		}
+		probed[s.ID] = true
 		return s.PID == 2 || s.PID == 4
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, id := range []string{"noident", "done", "reaped"} {
+		if probed[id] {
+			t.Errorf("isDead was called for %q; it should be filtered out before probing", id)
+		}
+	}
+	for _, id := range []string{"alive", "dead", "idledead"} {
+		if !probed[id] {
+			t.Errorf("isDead was not called for probeable session %q", id)
+		}
 	}
 	reapedIDs := map[string]bool{}
 	for _, s := range reaped {
@@ -263,6 +275,103 @@ func TestReapStale(t *testing.T) {
 	for _, s := range active {
 		if s.ID == "dead" {
 			t.Error("default list still shows the reaped session")
+		}
+	}
+}
+
+func TestGetSession(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "sm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+	now := time.Now()
+	if err := st.CreateSession(ctx, session.Session{
+		ID: "abcdef01", Agent: "claude", CWD: "/tmp", HostID: "h",
+		StartedAt: now, LastEventAt: now, Status: session.StateRunning,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Five events at increasing timestamps. recentEvents keeps the newest N and
+	// returns them oldest-first, so GetSession with limit 3 must yield the last
+	// three kinds in chronological order.
+	kinds := []session.EventKind{
+		session.EventSessionStart, session.EventUserPrompt, session.EventToolUse,
+		session.EventStop, session.EventSessionEnd,
+	}
+	for i, k := range kinds {
+		if err := st.AppendEvent(ctx, session.Event{
+			SessionID: "abcdef01", Kind: k, Timestamp: now.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	sess, events, err := st.GetSession(ctx, "abc", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.ID != "abcdef01" {
+		t.Errorf("resolved session ID = %q, want %q", sess.ID, "abcdef01")
+	}
+	want := []session.EventKind{session.EventToolUse, session.EventStop, session.EventSessionEnd}
+	if len(events) != len(want) {
+		t.Fatalf("got %d events, want %d (limit should keep the newest 3)", len(events), len(want))
+	}
+	for i, k := range want {
+		if events[i].Kind != k {
+			t.Errorf("events[%d].Kind = %q, want %q (oldest-first ordering)", i, events[i].Kind, k)
+		}
+	}
+
+	if _, _, err := st.GetSession(ctx, "", 10); err == nil {
+		t.Error("empty prefix: want error, got nil")
+	}
+}
+
+func TestFindSessionByNative(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "sm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+	now := time.Now()
+	if err := st.CreateSession(ctx, session.Session{
+		ID: "uuid-1", Agent: "claude", NativeID: "claude-native-123", CWD: "/tmp",
+		HostID: "h", StartedAt: now, LastEventAt: now, Status: session.StateRunning,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A known (agent, native_id) resolves to the daemon-assigned UUID.
+	id, err := st.FindSessionByNative(ctx, "claude", "claude-native-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "uuid-1" {
+		t.Errorf("FindSessionByNative = %q, want %q", id, "uuid-1")
+	}
+
+	// Unknown native id, right native but wrong agent, and empty native id must
+	// all resolve to "" — the lookup is scoped by both agent and native_id, so a
+	// mismatch creates a fresh session rather than colliding with this one.
+	misses := []struct{ agent, native string }{
+		{"claude", "unknown-native"},
+		{"opencode", "claude-native-123"},
+		{"claude", ""},
+	}
+	for _, c := range misses {
+		got, err := st.FindSessionByNative(ctx, c.agent, c.native)
+		if err != nil {
+			t.Fatalf("FindSessionByNative(%q, %q): %v", c.agent, c.native, err)
+		}
+		if got != "" {
+			t.Errorf("FindSessionByNative(%q, %q) = %q, want \"\"", c.agent, c.native, got)
 		}
 	}
 }
