@@ -205,7 +205,7 @@ func (h *handler) resolveSession(ctx context.Context, e *session.Event) error {
 		HostID:      h.hostID,
 		StartedAt:   e.Timestamp,
 		LastEventAt: e.Timestamp,
-		Status:      session.StateRunning,
+		Status:      session.StateIdle,
 		PID:         e.PID,
 		PIDStart:    e.PIDStart,
 		BootID:      e.BootID,

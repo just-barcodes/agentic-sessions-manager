@@ -10,7 +10,7 @@ func TestNextState(t *testing.T) {
 		kind EventKind
 		want State
 	}{
-		{EventSessionStart, StateRunning},
+		{EventSessionStart, StateIdle},
 		{EventUserPrompt, StateRunning},
 		{EventToolUse, StateRunning},
 		{EventNote, StateRunning},

@@ -8,6 +8,13 @@ Date: 2026-05-25
 > notification onto `idle`, `notify-send` was removed entirely (the `NotifySend`
 > sink is gone); push notifications will be redesigned separately. The
 > `waiting-count` file and `sm status` remain the status surfaces.
+>
+> Follow-up correction: `session_start` now maps to `idle`, not `running`.
+> Claude fires no `Stop` after a session starts/resumes/clears, so the original
+> `session_start → running` mapping stuck at `running` until the first turn
+> completed — a brand-new session and `/clear` both read `running` while
+> actually idle at the prompt. The real active-turn signal is `user_prompt` /
+> `tool_use`.
 
 ## Problem
 
@@ -88,9 +95,9 @@ Redefine states around what each signal actually means, and stop conflating
 
 | State      | Meaning                                          | Set by                                  |
 |------------|--------------------------------------------------|-----------------------------------------|
-| `running`  | Actively processing a turn                       | `session_start`, **`user_prompt`**, **`tool_use`** |
+| `running`  | Actively processing a turn                       | **`user_prompt`**, **`tool_use`**       |
 | `waiting`  | Blocked on a human (permission / input)          | `notification`, `permission.asked`      |
-| `idle`     | Alive, between turns, at the prompt              | `stop`, `session.idle`                  |
+| `idle`     | Alive, between turns, at the prompt              | `session_start`, `stop`, `session.idle` |
 | `finished` | Session terminated cleanly                       | `session_end` **only**                  |
 | `failed`   | Reported error                                   | `fail` / `session.error`                |
 | `dead`     | Process gone without a clean exit                | reaper                                  |

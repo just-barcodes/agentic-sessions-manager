@@ -88,11 +88,17 @@ const (
 // an event of the given kind. The empty string means "no state change".
 // Notifications are not handled here because their meaning depends on the
 // Notify sub-type — see Transition.
+//
+// session_start maps to idle, not running: a session that has just started,
+// resumed, cleared (/clear), or compacted is sitting at the prompt waiting for
+// the user — no work is in flight. (Claude fires no Stop after a start, so a
+// session_start → running mapping would stick at running until the first turn
+// completed.) The active-turn signal comes from user_prompt / tool_use.
 func NextState(k EventKind) State {
 	switch k {
-	case EventSessionStart, EventUserPrompt, EventToolUse, EventNote:
+	case EventUserPrompt, EventToolUse, EventNote:
 		return StateRunning
-	case EventStop:
+	case EventSessionStart, EventStop:
 		return StateIdle
 	case EventSessionEnd:
 		return StateFinished

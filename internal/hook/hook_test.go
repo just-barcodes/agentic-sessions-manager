@@ -28,7 +28,7 @@ func TestClaudeKindStates(t *testing.T) {
 		kind session.EventKind
 		want session.State
 	}{
-		{"SessionStart", session.EventSessionStart, session.StateRunning},
+		{"SessionStart", session.EventSessionStart, session.StateIdle},
 		{"UserPromptSubmit", session.EventUserPrompt, session.StateRunning},
 		{"PreToolUse", session.EventToolUse, session.StateRunning},
 		{"Notification", session.EventNotification, session.StateWaiting},
