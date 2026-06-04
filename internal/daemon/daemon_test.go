@@ -82,19 +82,19 @@ func TestHandleAnswerResumesRunning(t *testing.T) {
 	defer st.Close()
 
 	ctx := context.Background()
-	h := &handler{store: st, hostID: "h", ctx: ctx}
+	h := &handler{store: st, hostID: "h"}
 	t0 := time.Unix(1_000_000, 0)
-	notif := func(typ string, dt time.Duration) session.Event {
+	notif := func(typ session.NotifyType, dt time.Duration) session.Event {
 		return session.Event{
 			Agent: "claude", NativeID: "n", Kind: session.EventNotification,
 			Timestamp: t0.Add(dt),
-			Payload:   map[string]any{"notification_type": typ},
+			Notify:    typ,
 		}
 	}
 
-	h.handle(notif(session.NotifyElicitDialog, 0))            // agent asks
-	h.handle(notif(session.NotifyElicitResp, time.Second))    // user answers
-	h.handle(notif(session.NotifyIdle, 500*time.Millisecond)) // stale idle ping (older ts)
+	h.handle(ctx, notif(session.NotifyElicitDialog, 0))            // agent asks
+	h.handle(ctx, notif(session.NotifyElicitResp, time.Second))    // user answers
+	h.handle(ctx, notif(session.NotifyIdle, 500*time.Millisecond)) // stale idle ping (older ts)
 
 	all, err := st.ListSessions(ctx, true)
 	if err != nil {

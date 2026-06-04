@@ -103,9 +103,7 @@ func parseClaude(r io.Reader, now func() time.Time) (session.Event, bool, error)
 	if in.Message != "" {
 		e.Payload["message"] = in.Message
 	}
-	if in.NotificationType != "" {
-		e.Payload["notification_type"] = in.NotificationType
-	}
+	e.Notify = session.NotifyType(in.NotificationType)
 	return e, true, nil
 }
 

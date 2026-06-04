@@ -27,6 +27,7 @@ func TestListSessionsFiltersFinished(t *testing.T) {
 		{"wait", session.StateWaiting},
 		{"between", session.StateIdle}, // alive, between turns: must stay visible
 		{"done", session.StateFinished},
+		{"gone", session.StateDead}, // reaped: terminal, must be hidden by default
 		{"boom", session.StateFailed},
 	}
 	for _, s := range seed {
@@ -43,11 +44,11 @@ func TestListSessionsFiltersFinished(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(active) != 4 {
-		t.Fatalf("default list: want 4 sessions (finished hidden), got %d", len(active))
+		t.Fatalf("default list: want 4 sessions (finished + dead hidden), got %d", len(active))
 	}
 	for _, s := range active {
-		if s.Status == session.StateFinished {
-			t.Errorf("default list included finished session %q", s.ID)
+		if session.IsTerminal(s.Status) {
+			t.Errorf("default list included terminal session %q (%s)", s.ID, s.Status)
 		}
 	}
 
@@ -55,8 +56,8 @@ func TestListSessionsFiltersFinished(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(all) != 5 {
-		t.Fatalf("--all list: want 5 sessions, got %d", len(all))
+	if len(all) != 6 {
+		t.Fatalf("--all list: want 6 sessions, got %d", len(all))
 	}
 }
 
@@ -79,19 +80,21 @@ func TestUpdateStatusRecencyGuard(t *testing.T) {
 	}
 
 	// A newer tool_use moves it to running.
-	if err := st.UpdateStatus(ctx, "s", session.StateRunning, t0.Add(10*time.Second)); err != nil {
+	if _, err := st.UpdateStatus(ctx, "s", session.StateRunning, t0.Add(10*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	// A stale notification (earlier ts) must be ignored, not rewind to waiting.
-	if err := st.UpdateStatus(ctx, "s", session.StateWaiting, t0.Add(5*time.Second)); err != nil {
+	if n, err := st.UpdateStatus(ctx, "s", session.StateWaiting, t0.Add(5*time.Second)); err != nil {
 		t.Fatal(err)
+	} else if n != 0 {
+		t.Errorf("stale update changed %d rows, want 0 (recency guard should skip it)", n)
 	}
 	if got, _ := st.CurrentStatus(ctx, "s"); got != session.StateRunning {
 		t.Fatalf("stale event rewound state: got %q, want running", got)
 	}
 
 	// An equal-timestamp event still applies (ties resolve to last writer).
-	if err := st.UpdateStatus(ctx, "s", session.StateIdle, t0.Add(10*time.Second)); err != nil {
+	if _, err := st.UpdateStatus(ctx, "s", session.StateIdle, t0.Add(10*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := st.CurrentStatus(ctx, "s"); got != session.StateIdle {

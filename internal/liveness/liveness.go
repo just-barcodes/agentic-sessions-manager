@@ -11,6 +11,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+
+	"github.com/just-barcodes/agentic-sessions-manager/internal/session"
 )
 
 // Identity is a process fingerprint that stays stable for the life of a process
@@ -26,6 +29,17 @@ var shells = map[string]bool{
 	"fish": true, "ksh": true, "ash": true, "csh": true, "tcsh": true,
 }
 
+const (
+	// maxShellWalk caps how many ancestors Capture climbs while skipping shells
+	// before giving up — guards against a pathological process tree.
+	maxShellWalk = 16
+
+	// /proc/<pid>/stat field indices, numbered after statFields drops fields 1-2
+	// so f[0] is field 3. ppid is field 4; start time is field 22.
+	statIdxPPID  = 1  // f[1] = field 4
+	statIdxStart = 19 // f[19] = field 22
+)
+
 // Capture fingerprints the agent process that launched the current hook by
 // walking up the process tree, skipping any intervening shell (Claude runs
 // hooks via `sh -c`). It returns ok=false when no durable ancestor can be found
@@ -36,7 +50,7 @@ func Capture() (Identity, bool) {
 		return Identity{}, false
 	}
 	pid := os.Getpid()
-	for range 16 {
+	for range maxShellWalk {
 		ppid, err := ParentPID(pid)
 		if err != nil || ppid <= 1 {
 			return Identity{}, false
@@ -71,13 +85,22 @@ func Alive(id Identity) bool {
 	return start == id.Start
 }
 
-func bootID() (string, error) {
+// IsProcessDead reports whether the process fingerprinted on s is gone — the
+// negation of Alive over s's fingerprint fields. Centralised so the reaper
+// predicates in the daemon and CLI share one field mapping and cannot drift.
+func IsProcessDead(s session.Session) bool {
+	return !Alive(Identity{PID: s.PID, Start: s.PIDStart, BootID: s.BootID})
+}
+
+// bootID is invariant per boot, so read /proc once and reuse the result across
+// every liveness probe rather than re-reading on each sweep.
+var bootID = sync.OnceValues(func() (string, error) {
 	b, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(string(b)), nil
-}
+})
 
 func comm(pid int) string {
 	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/comm")
@@ -111,10 +134,10 @@ func ParentPID(pid int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if len(f) < 2 {
+	if len(f) <= statIdxPPID {
 		return 0, os.ErrInvalid
 	}
-	return strconv.Atoi(f[1]) // field 4
+	return strconv.Atoi(f[statIdxPPID])
 }
 
 func startTime(pid int) (uint64, error) {
@@ -122,8 +145,8 @@ func startTime(pid int) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if len(f) < 20 {
+	if len(f) <= statIdxStart {
 		return 0, os.ErrInvalid
 	}
-	return strconv.ParseUint(f[19], 10, 64) // field 22
+	return strconv.ParseUint(f[statIdxStart], 10, 64)
 }

@@ -22,6 +22,15 @@ type Store struct {
 	db *sql.DB
 }
 
+const (
+	// busyTimeoutMS is how long SQLite waits on a locked database before
+	// returning SQLITE_BUSY; the daemon and CLI open the same file concurrently.
+	busyTimeoutMS = 5000
+	// prefixMatchLimit caps the prefix lookup at two rows — enough to tell a
+	// unique match from an ambiguous one without scanning further.
+	prefixMatchLimit = 2
+)
+
 const schema = `
 CREATE TABLE IF NOT EXISTS sessions (
 	id            TEXT PRIMARY KEY,
@@ -57,7 +66,7 @@ func Open(path string) (*Store, error) {
 	// enable WAL + a busy timeout so the daemon and CLI processes, which each
 	// open their own *Store against the same file, don't collide with SQLITE_BUSY.
 	db.SetMaxOpenConns(1)
-	for _, pragma := range []string{"PRAGMA journal_mode=WAL", "PRAGMA busy_timeout=5000"} {
+	for _, pragma := range []string{"PRAGMA journal_mode=WAL", fmt.Sprintf("PRAGMA busy_timeout=%d", busyTimeoutMS)} {
 		if _, err := db.ExecContext(context.Background(), pragma); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("set pragma: %w", err)
@@ -79,15 +88,22 @@ func Open(path string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
+// XDGDir resolves an XDG base directory for sm: <$envVar>/sm when the variable
+// is set, otherwise <home>/<fallback>/sm. Shared by the store and the daemon so
+// the data and state directories resolve through one rule.
+func XDGDir(envVar, fallback string) string {
+	if v := os.Getenv(envVar); v != "" {
+		return filepath.Join(v, "sm")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, fallback, "sm")
+}
+
 // DataDir returns the sm data directory, honoring XDG_DATA_HOME and falling back
 // to ~/.local/share/sm. Both the daemon and the CLI resolve the database through
 // here so they always agree on its location.
 func DataDir() string {
-	if v := os.Getenv("XDG_DATA_HOME"); v != "" {
-		return filepath.Join(v, "sm")
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local/share", "sm")
+	return XDGDir("XDG_DATA_HOME", ".local/share")
 }
 
 // DefaultDBPath is the path to the sm database within DataDir.
@@ -142,12 +158,17 @@ func (s *Store) FindSessionByNative(ctx context.Context, agent, nativeID string)
 // UpdateStatus applies a state transition, but only if the event is at least as
 // recent as the last one already applied. The recency guard (ts >= last_event_at)
 // drops events that arrive out of order — e.g. a stale notification landing after
-// a newer tool_use — so a late event cannot rewind the session's state.
-func (s *Store) UpdateStatus(ctx context.Context, id string, status session.State, ts time.Time) error {
-	_, err := s.db.ExecContext(ctx,
+// a newer tool_use — so a late event cannot rewind the session's state. It
+// returns the number of rows changed (0 when the guard skipped the update) so
+// callers can tell whether the transition actually took effect.
+func (s *Store) UpdateStatus(ctx context.Context, id string, status session.State, ts time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
 		`UPDATE sessions SET status = ?, last_event_at = ? WHERE id = ? AND ? >= last_event_at`,
 		string(status), ts.Unix(), id, ts.Unix())
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // CurrentStatus returns the session's current state. It returns "" with no error
@@ -187,13 +208,9 @@ func (s *Store) ListSessions(ctx context.Context, includeFinished bool) ([]sessi
 		FROM sessions s`
 	args := []any{string(session.EventUserPrompt)}
 	if !includeFinished {
-		terminal := session.TerminalStates()
-		ph := make([]string, len(terminal))
-		for i, t := range terminal {
-			ph[i] = "?"
-			args = append(args, string(t))
-		}
-		query += ` WHERE s.status NOT IN (` + strings.Join(ph, ", ") + `)`
+		clause, targs := terminalNotIn("s.status")
+		query += ` WHERE ` + clause
+		args = append(args, targs...)
 	}
 	query += ` ORDER BY s.last_event_at DESC`
 
@@ -236,17 +253,12 @@ func (s *Store) CountByStatus(ctx context.Context, status session.State) (int, e
 // was actually last seen. Returns the reaped sessions (with Status set to dead)
 // so callers can react.
 func (s *Store) ReapStale(ctx context.Context, hostID string, isDead func(session.Session) bool) ([]session.Session, error) {
-	terminal := session.TerminalStates()
-	ph := make([]string, len(terminal))
-	qargs := []any{hostID}
-	for i, t := range terminal {
-		ph[i] = "?"
-		qargs = append(qargs, string(t))
-	}
+	clause, targs := terminalNotIn("status")
+	qargs := append([]any{hostID}, targs...)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, agent, cwd, host_id, last_event_at, pid, pid_start, boot_id
 		FROM sessions
-		WHERE host_id = ? AND pid != 0 AND status NOT IN (`+strings.Join(ph, ", ")+`)`,
+		WHERE host_id = ? AND pid != 0 AND `+clause,
 		qargs...)
 	if err != nil {
 		return nil, err
@@ -274,13 +286,34 @@ func (s *Store) ReapStale(ctx context.Context, hostID string, isDead func(sessio
 		if !isDead(sess) {
 			continue
 		}
-		if err := s.UpdateStatus(ctx, sess.ID, session.StateDead, sess.LastEventAt); err != nil {
+		// A concurrent newer event can win the recency guard between our SELECT
+		// and this UPDATE, leaving the row in a different terminal state. Only
+		// report the session as reaped when the UPDATE actually changed a row.
+		n, err := s.UpdateStatus(ctx, sess.ID, session.StateDead, sess.LastEventAt)
+		if err != nil {
 			return reaped, err
+		}
+		if n == 0 {
+			continue
 		}
 		sess.Status = session.StateDead
 		reaped = append(reaped, sess)
 	}
 	return reaped, nil
+}
+
+// terminalNotIn builds a "<col> NOT IN (?, ?)" clause plus the bind args for the
+// terminal states, so the rule for which sessions are hidden/skipped lives in
+// one place and both ListSessions and ReapStale stay in sync.
+func terminalNotIn(col string) (clause string, args []any) {
+	terminal := session.TerminalStates()
+	ph := make([]string, len(terminal))
+	args = make([]any, len(terminal))
+	for i, t := range terminal {
+		ph[i] = "?"
+		args[i] = string(t)
+	}
+	return col + " NOT IN (" + strings.Join(ph, ", ") + ")", args
 }
 
 // GetSession resolves a session by id prefix and returns it along with its
@@ -317,7 +350,7 @@ func (s *Store) ResolveSessionID(ctx context.Context, idPrefix string) (string, 
 func (s *Store) resolveByPrefix(ctx context.Context, idPrefix string) (session.Session, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, agent, native_id, cwd, host_id, started_at, last_event_at, status, pid, pid_start, boot_id
-		FROM sessions WHERE id LIKE ? LIMIT 2`, idPrefix+"%")
+		FROM sessions WHERE id LIKE ? LIMIT ?`, idPrefix+"%", prefixMatchLimit)
 	if err != nil {
 		return session.Session{}, err
 	}

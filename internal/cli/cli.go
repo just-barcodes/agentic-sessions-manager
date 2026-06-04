@@ -26,9 +26,7 @@ func reapStale(ctx context.Context, st *store.Store) {
 	if err != nil {
 		return
 	}
-	_, _ = st.ReapStale(ctx, host, func(s session.Session) bool {
-		return !liveness.Alive(liveness.Identity{PID: s.PID, Start: s.PIDStart, BootID: s.BootID})
-	})
+	_, _ = st.ReapStale(ctx, host, liveness.IsProcessDead)
 }
 
 func List(args []string) error {
@@ -118,7 +116,7 @@ func Mark(args []string) error {
 	if len(args) < 2 {
 		return errors.New("usage: sm mark <id> <state>")
 	}
-	state, ok := parseState(args[1])
+	state, ok := session.ParseState(args[1])
 	if !ok {
 		return fmt.Errorf("invalid state %q (want one of: running, waiting, idle, finished, failed)", args[1])
 	}
@@ -136,7 +134,7 @@ func Mark(args []string) error {
 	}
 
 	now := time.Now()
-	if err := st.UpdateStatus(ctx, id, state, now); err != nil {
+	if _, err := st.UpdateStatus(ctx, id, state, now); err != nil {
 		return err
 	}
 	if err := st.AppendEvent(ctx, session.Event{
@@ -150,10 +148,6 @@ func Mark(args []string) error {
 
 	fmt.Printf("%s → %s\n", short(id), state)
 	return nil
-}
-
-func parseState(s string) (session.State, bool) {
-	return session.ParseState(s)
 }
 
 // Focus raises the terminal window (and tmux pane) hosting a session's agent
@@ -246,9 +240,13 @@ func openStore() (*store.Store, error) {
 	return store.Open(store.DefaultDBPath())
 }
 
+// shortIDLen is how many leading hex chars of a session UUID `sm` displays;
+// enough to stay unambiguous in practice while fitting the list column.
+const shortIDLen = 8
+
 func short(id string) string {
-	if len(id) < 8 {
+	if len(id) < shortIDLen {
 		return id
 	}
-	return id[:8]
+	return id[:shortIDLen]
 }

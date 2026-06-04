@@ -44,7 +44,9 @@ func TestClaudeKindStates(t *testing.T) {
 		if kind != c.kind {
 			t.Errorf("%s mapped to %q, want %q", c.hook, kind, c.kind)
 		}
-		if got := session.NextState(kind); got != c.want {
+		// Notification's target state depends on notification_type, so it is
+		// owned by Transition, not NextState (which leaves it unchanged).
+		if got := session.Transition(session.StateIdle, session.Event{Kind: kind}); got != c.want {
 			t.Errorf("%s transitions to %q, want %q", c.hook, got, c.want)
 		}
 	}

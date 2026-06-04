@@ -57,36 +57,41 @@ type Event struct {
 	Kind      EventKind      `json:"kind"`
 	Timestamp time.Time      `json:"ts"`
 	Payload   map[string]any `json:"payload,omitempty"`
+	Notify    NotifyType     `json:"notify,omitempty"`    // sub-type for Notification events; empty otherwise
 	PID       int            `json:"pid,omitempty"`       // agent process id, captured by the hook
 	PIDStart  uint64         `json:"pid_start,omitempty"` // PID's /proc start time
 	BootID    string         `json:"boot_id,omitempty"`   // boot id when PID was captured
 }
 
-// Claude Code's Notification hook fires for several distinct sub-events,
-// reported in the payload's notification_type field. They do not all mean "the
-// agent is blocked": elicitation_complete/response fire when the user *answers*
-// a question (the agent is resuming), and auth_success is informational. Not
-// every Claude version populates notification_type (anthropics/claude-code#11964),
-// so an absent type falls back to the conservative "waiting".
+// NotifyType is the sub-type of a Notification event, set by the hook from
+// Claude's notification_type field. Typing it gives the hook (producer) and
+// Transition (consumer) a shared, compile-time-checked contract.
+//
+// Claude Code's Notification hook fires for several distinct sub-events that do
+// not all mean "the agent is blocked": elicitation_complete/response fire when
+// the user *answers* a question (the agent is resuming), and auth_success is
+// informational. Not every Claude version populates the type
+// (anthropics/claude-code#11964), so an absent type falls back to the
+// conservative "waiting".
+type NotifyType string
+
 const (
-	NotifyPermission   = "permission_prompt"    // agent needs permission — blocked
-	NotifyIdle         = "idle_prompt"          // 60s idle, "waiting for your input"
-	NotifyAuthSuccess  = "auth_success"         // login completed — informational
-	NotifyElicitDialog = "elicitation_dialog"   // a question is shown — blocked
-	NotifyElicitDone   = "elicitation_complete" // the question was answered — resuming
-	NotifyElicitResp   = "elicitation_response" // the question was answered — resuming
+	NotifyPermission   NotifyType = "permission_prompt"    // agent needs permission — blocked
+	NotifyIdle         NotifyType = "idle_prompt"          // 60s idle, "waiting for your input"
+	NotifyAuthSuccess  NotifyType = "auth_success"         // login completed — informational
+	NotifyElicitDialog NotifyType = "elicitation_dialog"   // a question is shown — blocked
+	NotifyElicitDone   NotifyType = "elicitation_complete" // the question was answered — resuming
+	NotifyElicitResp   NotifyType = "elicitation_response" // the question was answered — resuming
 )
 
 // NextState returns the state a session should transition to after observing
 // an event of the given kind. The empty string means "no state change".
 // Notifications are not handled here because their meaning depends on the
-// notification_type payload — see Transition.
+// Notify sub-type — see Transition.
 func NextState(k EventKind) State {
 	switch k {
 	case EventSessionStart, EventUserPrompt, EventToolUse, EventNote:
 		return StateRunning
-	case EventNotification:
-		return StateWaiting
 	case EventStop:
 		return StateIdle
 	case EventSessionEnd:
@@ -137,7 +142,7 @@ func Transition(cur State, e Event) State {
 	if e.Kind != EventNotification {
 		return NextState(e.Kind)
 	}
-	switch notifyType(e) {
+	switch e.Notify {
 	case NotifyElicitDone, NotifyElicitResp, NotifyAuthSuccess:
 		return StateRunning
 	case NotifyPermission, NotifyElicitDialog:
@@ -150,9 +155,4 @@ func Transition(cur State, e Event) State {
 	default:
 		return StateWaiting
 	}
-}
-
-func notifyType(e Event) string {
-	s, _ := e.Payload["notification_type"].(string)
-	return s
 }

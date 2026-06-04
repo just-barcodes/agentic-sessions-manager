@@ -39,6 +39,24 @@ func TestParseClaudeEvent(t *testing.T) {
 	}
 }
 
+// TestParseClaudeNotificationToTransition chains the producer (parseClaude) to
+// the consumer (session.Transition) to prove the core domain fix end to end: a
+// Notification carrying notification_type=elicitation_response must resume the
+// agent (→ running), not leave it stuck in waiting.
+func TestParseClaudeNotificationToTransition(t *testing.T) {
+	in := `{"session_id":"abc","hook_event_name":"Notification","notification_type":"elicitation_response"}`
+	e, ok, err := parseClaude(strings.NewReader(in), fixedNow)
+	if err != nil || !ok {
+		t.Fatalf("parseClaude: ok=%v err=%v", ok, err)
+	}
+	if e.Notify != session.NotifyElicitResp {
+		t.Fatalf("Notify = %q, want %q", e.Notify, session.NotifyElicitResp)
+	}
+	if got := session.Transition(session.StateWaiting, e); got != session.StateRunning {
+		t.Errorf("answering a question left state %q, want running", got)
+	}
+}
+
 func TestParseClaudeIgnoredEvent(t *testing.T) {
 	e, ok, err := parseClaude(strings.NewReader(`{"hook_event_name":"PreCompact"}`), fixedNow)
 	if err != nil {
@@ -75,6 +93,28 @@ func TestParseOpencodeEvent(t *testing.T) {
 	}
 	if e.Payload["cwd"] != "/work" {
 		t.Errorf("cwd payload = %v, want /work", e.Payload["cwd"])
+	}
+}
+
+// TestParseOpencodeSessionCreated covers the session.created/updated path: it
+// maps to a session_start and lifts properties.info.directory into the cwd
+// payload so a new session records where it is running.
+func TestParseOpencodeSessionCreated(t *testing.T) {
+	for _, typ := range []string{"session.created", "session.updated"} {
+		in := `{"type":"` + typ + `","properties":{"sessionID":"sess-2","info":{"directory":"/proj"}}}`
+		e, ok, err := parseOpencode(strings.NewReader(in), fixedNow)
+		if err != nil || !ok {
+			t.Fatalf("%s: ok=%v err=%v", typ, ok, err)
+		}
+		if e.Kind != session.EventSessionStart {
+			t.Errorf("%s: kind = %q, want %q", typ, e.Kind, session.EventSessionStart)
+		}
+		if e.NativeID != "sess-2" {
+			t.Errorf("%s: native id = %q, want sess-2", typ, e.NativeID)
+		}
+		if e.Payload["cwd"] != "/proj" {
+			t.Errorf("%s: cwd payload = %v, want /proj", typ, e.Payload["cwd"])
+		}
 	}
 }
 

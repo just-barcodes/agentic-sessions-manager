@@ -25,9 +25,13 @@ func RealSystem() System {
 
 // ancestors returns pid followed by its parent chain, stopping at init. It
 // reuses liveness.ParentPID so there is a single /proc/<pid>/stat parser.
+// maxAncestorWalk caps the parent-chain walk so a cycle or pathological tree
+// can't loop forever; deeper than this and we give up locating the window.
+const maxAncestorWalk = 32
+
 func ancestors(pid int) ([]int, error) {
 	chain := []int{pid}
-	for range 32 {
+	for range maxAncestorWalk {
 		ppid, err := liveness.ParentPID(pid)
 		if err != nil {
 			return nil, err

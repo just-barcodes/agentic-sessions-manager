@@ -25,13 +25,19 @@ import (
 	"github.com/just-barcodes/agentic-sessions-manager/internal/store"
 )
 
-// sweepInterval is how often the daemon reaps sessions whose agent process has
-// died without a clean exit. Liveness checks are cheap (a few /proc reads each).
-const sweepInterval = 30 * time.Second
+const (
+	// sweepInterval is how often the daemon reaps sessions whose agent process
+	// has died without a clean exit. Liveness checks are cheap (a few /proc reads each).
+	sweepInterval = 30 * time.Second
+
+	countTimeout     = 2 * time.Second // bound the waiting-count query for an alert sink
+	storeOpTimeout   = 5 * time.Second // bound a single event's store operations
+	natsReadyTimeout = 5 * time.Second // how long to wait for the embedded NATS server to accept connections
+)
 
 func Run(_ []string) error {
 	dataDir := store.DataDir()
-	stateDir := xdgDir("XDG_STATE_HOME", ".local/state")
+	stateDir := store.XDGDir("XDG_STATE_HOME", ".local/state")
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return err
 	}
@@ -66,7 +72,7 @@ func Run(_ []string) error {
 			alert.CountFile{
 				Path: filepath.Join(stateDir, "waiting-count"),
 				Count: func() (int, error) {
-					ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+					ctx, cancel := context.WithTimeout(context.Background(), countTimeout)
 					defer cancel()
 					return st.CountByStatus(ctx, session.StateWaiting)
 				},
@@ -76,9 +82,8 @@ func Run(_ []string) error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	h.ctx = ctx
 
-	if err := b.Subscribe(ctx, h.handle); err != nil {
+	if err := b.Subscribe(ctx, func(e session.Event) { h.handle(ctx, e) }); err != nil {
 		return err
 	}
 	go h.sweepLoop(ctx)
@@ -91,16 +96,15 @@ func Run(_ []string) error {
 // concurrent processing, and ordering matters for state transitions.
 type handler struct {
 	mu     sync.Mutex
-	ctx    context.Context // base context for store ops; set before Subscribe
 	store  *store.Store
 	hostID string
 	sinks  []alert.Sink
 }
 
-func (h *handler) handle(e session.Event) {
+func (h *handler) handle(ctx context.Context, e session.Event) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	ctx, cancel := context.WithTimeout(h.ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, storeOpTimeout)
 	defer cancel()
 
 	if e.Timestamp.IsZero() {
@@ -119,7 +123,7 @@ func (h *handler) handle(e session.Event) {
 	if next == "" {
 		return
 	}
-	if err := h.store.UpdateStatus(ctx, e.SessionID, next, e.Timestamp); err != nil {
+	if _, err := h.store.UpdateStatus(ctx, e.SessionID, next, e.Timestamp); err != nil {
 		log.Printf("daemon: update status: %v", err)
 		return // don't fan out a state change we failed to persist
 	}
@@ -162,9 +166,7 @@ func (h *handler) sweepLoop(ctx context.Context) {
 func (h *handler) sweep(ctx context.Context) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	reaped, err := h.store.ReapStale(ctx, h.hostID, func(s session.Session) bool {
-		return !liveness.Alive(liveness.Identity{PID: s.PID, Start: s.PIDStart, BootID: s.BootID})
-	})
+	reaped, err := h.store.ReapStale(ctx, h.hostID, liveness.IsProcessDead)
 	if err != nil {
 		log.Printf("daemon: reap stale: %v", err)
 		return
@@ -239,17 +241,9 @@ func startEmbeddedNATS(host string, port int) (*natsserver.Server, error) {
 		return nil, fmt.Errorf("create nats server: %w", err)
 	}
 	go ns.Start()
-	if !ns.ReadyForConnections(5 * time.Second) {
+	if !ns.ReadyForConnections(natsReadyTimeout) {
 		ns.Shutdown()
 		return nil, errors.New("nats server not ready (port in use?)")
 	}
 	return ns, nil
-}
-
-func xdgDir(envVar, fallback string) string {
-	if v := os.Getenv(envVar); v != "" {
-		return filepath.Join(v, "sm")
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, fallback, "sm")
 }

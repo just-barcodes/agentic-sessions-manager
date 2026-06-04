@@ -14,7 +14,7 @@ func TestNextState(t *testing.T) {
 		{EventUserPrompt, StateRunning},
 		{EventToolUse, StateRunning},
 		{EventNote, StateRunning},
-		{EventNotification, StateWaiting},
+		{EventNotification, ""}, // notifications are routed by Transition, not NextState
 		{EventStop, StateIdle},
 		{EventSessionEnd, StateFinished},
 		{EventFail, StateFailed},
@@ -27,17 +27,53 @@ func TestNextState(t *testing.T) {
 	}
 }
 
+func TestIsTerminal(t *testing.T) {
+	cases := map[State]bool{
+		StateFinished: true,
+		StateDead:     true,
+		StateRunning:  false,
+		StateWaiting:  false,
+		StateIdle:     false,
+		StateFailed:   false,
+	}
+	for state, want := range cases {
+		if got := IsTerminal(state); got != want {
+			t.Errorf("IsTerminal(%q) = %v, want %v", state, got, want)
+		}
+	}
+}
+
+// TestParseState verifies only user-settable states are accepted and that the
+// reaper-only StateDead is rejected from `sm mark`.
+func TestParseState(t *testing.T) {
+	cases := map[string]struct {
+		want State
+		ok   bool
+	}{
+		"running":  {StateRunning, true},
+		"waiting":  {StateWaiting, true},
+		"idle":     {StateIdle, true},
+		"finished": {StateFinished, true},
+		"failed":   {StateFailed, true},
+		"dead":     {"", false}, // reaper-only, not user-settable
+		"bogus":    {"", false},
+		"":         {"", false},
+	}
+	for in, want := range cases {
+		got, ok := ParseState(in)
+		if got != want.want || ok != want.ok {
+			t.Errorf("ParseState(%q) = (%q, %v), want (%q, %v)", in, got, ok, want.want, want.ok)
+		}
+	}
+}
+
 // TestTransitionNotification locks the notification_type → state mapping that
 // keeps a session from getting stuck in waiting: answering a question resumes
 // the agent (→ running), an idle ping must not knock an active turn back to
 // waiting, and an absent/unknown type falls back to waiting.
 func TestTransitionNotification(t *testing.T) {
-	notif := func(typ string) Event {
-		e := Event{Kind: EventNotification}
-		if typ != "" {
-			e.Payload = map[string]any{"notification_type": typ}
-		}
-		return e
+	notif := func(typ NotifyType) Event {
+		return Event{Kind: EventNotification, Notify: typ}
 	}
 	cases := []struct {
 		name string
@@ -58,7 +94,7 @@ func TestTransitionNotification(t *testing.T) {
 	}
 	for _, c := range cases {
 		if got := Transition(c.cur, c.e); got != c.want {
-			t.Errorf("%s: Transition(%q, %q) = %q, want %q", c.name, c.cur, notifyType(c.e), got, c.want)
+			t.Errorf("%s: Transition(%q, %q) = %q, want %q", c.name, c.cur, c.e.Notify, got, c.want)
 		}
 	}
 }
