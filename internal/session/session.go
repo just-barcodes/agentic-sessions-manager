@@ -137,7 +137,10 @@ func ParseState(s string) (State, bool) {
 // (NextState) except Notification, whose meaning depends on its sub-type:
 //
 //   - answering a question (elicitation_complete/response) or completing auth
-//     means the agent is resuming → running;
+//     resumes the agent → running, but only from waiting: these signal the end
+//     of a block, so they must not start a turn on a session that wasn't blocked.
+//     A background auth_success (e.g. a periodic token refresh) on an idle /
+//     just-cleared session would otherwise spuriously flip it to running;
 //   - a permission request or a shown question → waiting;
 //   - a 60s idle ping → waiting, unless the session is already running (a stale
 //     ping must not knock an active turn back to waiting — tool_use is
@@ -150,7 +153,10 @@ func Transition(cur State, e Event) State {
 	}
 	switch e.Notify {
 	case NotifyElicitDone, NotifyElicitResp, NotifyAuthSuccess:
-		return StateRunning
+		if cur == StateWaiting {
+			return StateRunning
+		}
+		return ""
 	case NotifyPermission, NotifyElicitDialog:
 		return StateWaiting
 	case NotifyIdle:
