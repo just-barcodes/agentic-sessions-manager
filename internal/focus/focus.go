@@ -12,11 +12,17 @@ package focus
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/just-barcodes/agentic-sessions-manager/internal/liveness"
 )
+
+// tmuxPaneRe matches a tmux pane id (e.g. "%7"). TMUX_PANE is read from
+// /proc/<pid>/environ, so validate it before passing it to tmux's -t flag to
+// keep an attacker-controlled value from being interpreted as an option.
+var tmuxPaneRe = regexp.MustCompile(`^%[0-9]+$`)
 
 // Client is the subset of a `hyprctl clients -j` entry that focus needs. The
 // pid is the window owner — the terminal emulator, not the agent inside it.
@@ -71,6 +77,9 @@ func focusBare(sys System, pid int) error {
 // instead it locates a client viewing the pane's session and raises that
 // client's terminal window, then selects the pane within tmux.
 func focusTmux(sys System, pane string) error {
+	if !tmuxPaneRe.MatchString(pane) {
+		return fmt.Errorf("refusing malformed tmux pane id %q", pane)
+	}
 	session, err := sys.Tmux("display-message", "-p", "-t", pane, "#{session_name}")
 	if err != nil {
 		return fmt.Errorf("resolve tmux session for pane %s: %w", pane, err)
