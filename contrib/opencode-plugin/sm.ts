@@ -6,7 +6,6 @@
 import type { Plugin } from "@opencode-ai/plugin"
 
 const SM_BIN = process.env.SM_BIN ?? "sm"
-const announced = new Set<string>()
 
 const FORWARD = new Set(["permission.asked", "session.idle", "session.error"])
 
@@ -25,22 +24,25 @@ const send = async (payload: unknown) => {
   }
 }
 
-export const SmTracker: Plugin = async () => ({
-  event: async ({ event }) => {
-    const props = (event as any)?.properties
-    const sid: unknown = props?.sessionID
-    if (typeof sid !== "string" || !sid) return
+export const SmTracker: Plugin = async () => {
+  const announced = new Set<string>()
+  return {
+    event: async ({ event }) => {
+      const props = (event as any)?.properties
+      const sid: unknown = props?.sessionID
+      if (typeof sid !== "string" || !sid) return
 
-    if (event.type === "session.created" || event.type === "session.updated") {
-      if (announced.has(sid)) return
-      announced.add(sid)
-      await send({ type: "session.updated", properties: props })
-      return
-    }
-    if (FORWARD.has(event.type)) {
-      await send(event)
-    }
-  },
-})
+      if (event.type === "session.created" || event.type === "session.updated") {
+        if (announced.has(sid)) return
+        announced.add(sid)
+        await send({ type: "session.updated", properties: props })
+        return
+      }
+      if (FORWARD.has(event.type)) {
+        await send(event)
+      }
+    },
+  }
+}
 
 export default SmTracker
