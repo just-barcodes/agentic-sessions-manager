@@ -51,9 +51,9 @@ No client-side state, no NATS request/reply round-trip. A missed `SessionStart` 
 
 | State      | Meaning                                          | Set by              |
 |------------|--------------------------------------------------|---------------------|
-| `running`  | Actively processing a turn                       | `SessionStart`, `UserPromptSubmit`, `PreToolUse` |
+| `running`  | Actively processing a turn                       | `UserPromptSubmit`, `PreToolUse` |
 | `waiting`  | Blocked on human input or permission             | `Notification` hook |
-| `idle`     | Alive, between turns (last turn ended)           | `Stop` hook (or `sm mark idle`) |
+| `idle`     | Alive, at the prompt (just started or between turns) | `SessionStart`, `Stop` hook (or `sm mark idle`) |
 | `finished` | Session terminated cleanly                       | `SessionEnd` hook   |
 | `failed`   | Reported failure                                 | `session.error` (opencode) |
 | `dead`     | Process gone without a clean exit                | reaper (process liveness) |
@@ -113,7 +113,7 @@ fingerprint captured for liveness: from the stored pid it inspects the live
 process to decide how to focus.
 
 - **Bare terminal window**: walks the agent's process ancestors and raises the
-  Hyprland window that owns them (`hyprctl dispatch focuswindow`).
+  Hyprland window that owns them (`hyprctl dispatch hl.dsp.focus`).
 - **Inside tmux** (`TMUX_PANE` set in the agent's environment): finds a client
   viewing the pane's session, raises that client's window, and selects the pane.
 
