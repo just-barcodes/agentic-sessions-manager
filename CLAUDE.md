@@ -59,8 +59,10 @@ sm emit ──(NATS)──> daemon
 - Owner-only on disk: the DB and data dir are `0600`/`0700`; keep new files that
   hold prompt text or paths the same.
 - Times are stored as Unix seconds in SQLite.
-- State transitions go through `session.Transition`; terminal states come from
-  `session.TerminalStates()` so filters stay in sync.
+- Event-driven state transitions go through `session.Transition`; terminal
+  states come from `session.TerminalStates()` so filters stay in sync. The one
+  sanctioned exception is `sm mark`, a manual override that writes a
+  user-chosen state validated by `session.ParseState` (not the event machine).
 
 ## Pointers
 

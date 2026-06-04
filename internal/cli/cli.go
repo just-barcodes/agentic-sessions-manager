@@ -134,8 +134,15 @@ func Mark(args []string) error {
 	}
 
 	now := time.Now()
-	if _, err := st.UpdateStatus(ctx, id, state, now); err != nil {
+	changed, err := st.UpdateStatus(ctx, id, state, now)
+	if err != nil {
 		return err
+	}
+	if changed == 0 {
+		// The recency guard skipped the write: a newer event already advanced
+		// this session past `now`. Don't claim success or append a note that
+		// would misreport the state.
+		return fmt.Errorf("mark skipped: %s already has a newer event; status unchanged", short(id))
 	}
 	if err := st.AppendEvent(ctx, session.Event{
 		SessionID: id,
