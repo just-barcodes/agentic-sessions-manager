@@ -117,6 +117,7 @@ func (h *handler) handle(ctx context.Context, e session.Event) {
 	if err := h.store.AppendEvent(ctx, e); err != nil {
 		log.Printf("daemon: append event: %v", err)
 	}
+	logUnclassifiedNotification(e)
 
 	cur, _ := h.store.CurrentStatus(ctx, e.SessionID)
 	next := session.Transition(cur, e)
@@ -215,6 +216,22 @@ func (h *handler) resolveSession(ctx context.Context, e *session.Event) error {
 func asString(v any) string {
 	s, _ := v.(string)
 	return s
+}
+
+// logUnclassifiedNotification surfaces a Notification the hook could not map to a
+// sub-type (empty Notify) but that still carried a message — i.e. wording the
+// classifier in hook.claudeNotify doesn't recognise yet. These fall back to
+// waiting, so logging the raw message here (durably, via journald) is how we
+// catch Claude changing or localizing its notification text before it silently
+// mislabels sessions. Typeless, messageless notifications are skipped: there is
+// nothing to learn from them.
+func logUnclassifiedNotification(e session.Event) {
+	if e.Kind != session.EventNotification || e.Notify != "" {
+		return
+	}
+	if msg := asString(e.Payload["message"]); msg != "" {
+		log.Printf("daemon: unclassified notification (defaulting to waiting): %q", msg)
+	}
 }
 
 func newID() string {
