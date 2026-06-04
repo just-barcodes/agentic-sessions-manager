@@ -142,9 +142,11 @@ func ParseState(s string) (State, bool) {
 //     A background auth_success (e.g. a periodic token refresh) on an idle /
 //     just-cleared session would otherwise spuriously flip it to running;
 //   - a permission request or a shown question → waiting;
-//   - a 60s idle ping → waiting, unless the session is already running (a stale
-//     ping must not knock an active turn back to waiting — tool_use is
-//     authoritative while a turn is in flight);
+//   - a 60s idle ping ("Claude is waiting for your input") is informational and
+//     never changes state: the agent isn't blocked on a decision, the user just
+//     hasn't typed yet. A freshly started or /cleared session sits at idle and
+//     must stay there rather than being flagged as needing attention; an active
+//     turn (running) must not be knocked back either;
 //   - an absent or unrecognised type → waiting (the safe default that preserves
 //     "agent asked → waiting" on Claude versions that omit notification_type).
 func Transition(cur State, e Event) State {
@@ -160,10 +162,7 @@ func Transition(cur State, e Event) State {
 	case NotifyPermission, NotifyElicitDialog:
 		return StateWaiting
 	case NotifyIdle:
-		if cur == StateRunning {
-			return ""
-		}
-		return StateWaiting
+		return ""
 	default:
 		return StateWaiting
 	}

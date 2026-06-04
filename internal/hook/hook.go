@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/just-barcodes/agentic-sessions-manager/internal/bus"
@@ -111,8 +112,27 @@ func parseClaude(r io.Reader, now func() time.Time) (session.Event, bool, error)
 	if in.Message != "" {
 		e.Payload["message"] = in.Message
 	}
-	e.Notify = session.NotifyType(in.NotificationType)
+	e.Notify = claudeNotify(in.NotificationType, in.Message)
 	return e, true, nil
+}
+
+// claudeNotify resolves a Notification's sub-type. Newer Claude versions populate
+// notification_type; when it's absent (anthropics/claude-code#11964) we classify
+// the human-readable message instead. This is what lets sm distinguish a 60s idle
+// reminder ("Claude is waiting for your input") — which must not flag a fresh or
+// /cleared session as waiting — from a real permission block. An unrecognised or
+// empty message yields "", which Transition treats as the conservative "waiting".
+func claudeNotify(typ, msg string) session.NotifyType {
+	if typ != "" {
+		return session.NotifyType(typ)
+	}
+	switch {
+	case strings.Contains(msg, "needs your permission"):
+		return session.NotifyPermission
+	case strings.Contains(msg, "waiting for your input"):
+		return session.NotifyIdle
+	}
+	return ""
 }
 
 // publish connects to the bus, emits e, and closes the connection.

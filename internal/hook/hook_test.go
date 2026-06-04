@@ -19,6 +19,36 @@ func TestClaudeKindSessionEnd(t *testing.T) {
 	}
 }
 
+// TestClaudeNotify checks the notification sub-type resolution: an explicit
+// notification_type wins, and when it is absent the message text is classified so
+// a 60s idle reminder lands the session at idle (no change) rather than waiting.
+func TestClaudeNotify(t *testing.T) {
+	cases := []struct {
+		name string
+		typ  string
+		msg  string
+		want session.NotifyType
+		// raw Transition output from an idle session; "" means "stays idle".
+		wantNext session.State
+	}{
+		{"explicit type wins", "permission_prompt", "anything", session.NotifyPermission, session.StateWaiting},
+		{"permission from message", "", "Claude needs your permission", session.NotifyPermission, session.StateWaiting},
+		{"idle reminder from message", "", "Claude is waiting for your input", session.NotifyIdle, ""},
+		{"unknown message falls back to waiting", "", "something else", session.NotifyType(""), session.StateWaiting},
+		{"empty message falls back to waiting", "", "", session.NotifyType(""), session.StateWaiting},
+	}
+	for _, c := range cases {
+		got := claudeNotify(c.typ, c.msg)
+		if got != c.want {
+			t.Errorf("%s: claudeNotify(%q, %q) = %q, want %q", c.name, c.typ, c.msg, got, c.want)
+		}
+		e := session.Event{Kind: session.EventNotification, Notify: got}
+		if next := session.Transition(session.StateIdle, e); next != c.wantNext {
+			t.Errorf("%s: idle + %q → %q, want %q", c.name, got, next, c.wantNext)
+		}
+	}
+}
+
 // TestClaudeKindStates checks each wired Claude hook maps to the kind that lands
 // the session in the right state — in particular that Stop is a turn boundary
 // (→ idle), not a session end, and that the working signals are recognized.

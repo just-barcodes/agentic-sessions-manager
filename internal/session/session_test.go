@@ -69,8 +69,9 @@ func TestParseState(t *testing.T) {
 
 // TestTransitionNotification locks the notification_type → state mapping that
 // keeps a session from getting stuck in waiting: answering a question resumes
-// the agent (→ running), an idle ping must not knock an active turn back to
-// waiting, and an absent/unknown type falls back to waiting.
+// the agent (→ running), a 60s idle ping never changes state (so a fresh/cleared
+// idle session is not flagged as waiting), and an absent/unknown type falls back
+// to waiting.
 func TestTransitionNotification(t *testing.T) {
 	notif := func(typ NotifyType) Event {
 		return Event{Kind: EventNotification, Notify: typ}
@@ -89,7 +90,7 @@ func TestTransitionNotification(t *testing.T) {
 		{"auth success on running session is ignored", StateRunning, notif(NotifyAuthSuccess), ""},
 		{"permission request waits", StateRunning, notif(NotifyPermission), StateWaiting},
 		{"shown question waits", StateRunning, notif(NotifyElicitDialog), StateWaiting},
-		{"idle ping while idle waits", StateIdle, notif(NotifyIdle), StateWaiting},
+		{"idle ping while idle stays idle", StateIdle, notif(NotifyIdle), ""},
 		{"idle ping while running is ignored", StateRunning, notif(NotifyIdle), ""},
 		{"absent type falls back to waiting", StateIdle, notif(""), StateWaiting},
 		{"unknown type falls back to waiting", StateRunning, notif("future_kind"), StateWaiting},
