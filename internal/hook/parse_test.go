@@ -67,6 +67,24 @@ func TestParseClaudeIgnoredEvent(t *testing.T) {
 	}
 }
 
+// TestParseClaudeCompactSkipped verifies a SessionStart fired by compaction
+// (source=compact) is dropped: compaction happens mid-session and must not reset
+// an active turn to idle. A normal startup SessionStart still flows through.
+func TestParseClaudeCompactSkipped(t *testing.T) {
+	compact := `{"session_id":"abc","hook_event_name":"SessionStart","source":"compact"}`
+	if _, ok, err := parseClaude(strings.NewReader(compact), fixedNow); ok || err != nil {
+		t.Fatalf("compact SessionStart: ok=%v err=%v, want ok=false", ok, err)
+	}
+	startup := `{"session_id":"abc","hook_event_name":"SessionStart","source":"startup"}`
+	e, ok, err := parseClaude(strings.NewReader(startup), fixedNow)
+	if err != nil || !ok {
+		t.Fatalf("startup SessionStart: ok=%v err=%v", ok, err)
+	}
+	if e.Kind != session.EventSessionStart {
+		t.Errorf("kind = %q, want %q", e.Kind, session.EventSessionStart)
+	}
+}
+
 func TestParseClaudeBadJSON(t *testing.T) {
 	if _, _, err := parseClaude(strings.NewReader("{not json"), fixedNow); err == nil {
 		t.Fatal("expected decode error")

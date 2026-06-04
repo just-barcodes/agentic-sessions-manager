@@ -58,6 +58,7 @@ type claudeInput struct {
 	SessionID        string `json:"session_id"`
 	HookEventName    string `json:"hook_event_name"`
 	CWD              string `json:"cwd"`
+	Source           string `json:"source"`            // SessionStart: startup|resume|clear|compact
 	Reason           string `json:"reason"`            // SessionEnd: clear|logout|prompt_input_exit|other
 	Prompt           string `json:"prompt"`            // UserPromptSubmit: the submitted prompt text
 	Message          string `json:"message"`           // Notification: the human-readable message
@@ -82,6 +83,13 @@ func parseClaude(r io.Reader, now func() time.Time) (session.Event, bool, error)
 	}
 	kind, ok := claudeKind(in.HookEventName)
 	if !ok {
+		return session.Event{}, false, nil
+	}
+	// Compaction (auto or /compact) fires a SessionStart with source=compact
+	// after the "recap" is generated. This happens mid-session — often during an
+	// active turn — so it must not reset state to idle. Skip it; the real start /
+	// resume / clear sources still flow through to idle.
+	if kind == session.EventSessionStart && in.Source == "compact" {
 		return session.Event{}, false, nil
 	}
 	e := session.Event{
