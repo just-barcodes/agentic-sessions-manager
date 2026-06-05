@@ -222,16 +222,12 @@ func (s *Store) ListSessions(ctx context.Context, includeFinished bool) ([]sessi
 
 	var out []session.Session
 	for rows.Next() {
-		var sess session.Session
-		var startedAt, lastEventAt int64
-		var status string
-		if err := rows.Scan(&sess.ID, &sess.Agent, &sess.NativeID, &sess.CWD, &sess.HostID,
-			&startedAt, &lastEventAt, &status, &sess.PID, &sess.PIDStart, &sess.BootID, &sess.LastPrompt); err != nil {
+		var lastPrompt string
+		sess, err := scanSession(rows, &lastPrompt)
+		if err != nil {
 			return nil, err
 		}
-		sess.StartedAt = time.Unix(startedAt, 0)
-		sess.LastEventAt = time.Unix(lastEventAt, 0)
-		sess.Status = session.State(status)
+		sess.LastPrompt = lastPrompt
 		out = append(out, sess)
 	}
 	return out, rows.Err()
@@ -358,16 +354,10 @@ func (s *Store) resolveByPrefix(ctx context.Context, idPrefix string) (session.S
 
 	var found []session.Session
 	for rows.Next() {
-		var sess session.Session
-		var startedAt, lastEventAt int64
-		var status string
-		if err := rows.Scan(&sess.ID, &sess.Agent, &sess.NativeID, &sess.CWD, &sess.HostID,
-			&startedAt, &lastEventAt, &status, &sess.PID, &sess.PIDStart, &sess.BootID); err != nil {
+		sess, err := scanSession(rows)
+		if err != nil {
 			return session.Session{}, err
 		}
-		sess.StartedAt = time.Unix(startedAt, 0)
-		sess.LastEventAt = time.Unix(lastEventAt, 0)
-		sess.Status = session.State(status)
 		found = append(found, sess)
 	}
 	if err := rows.Err(); err != nil {
@@ -381,6 +371,28 @@ func (s *Store) resolveByPrefix(ctx context.Context, idPrefix string) (session.S
 	default:
 		return session.Session{}, fmt.Errorf("ambiguous prefix %q: matches multiple sessions", idPrefix)
 	}
+}
+
+// scanSession reads the eleven core session columns from the current row, in the
+// column order every full-session SELECT uses, and applies the Unix→time and
+// status conversions. Callers selecting trailing columns (e.g. ListSessions'
+// last_prompt) pass their scan destinations as extra; they are appended to the
+// single Scan call.
+func scanSession(rows *sql.Rows, extra ...any) (session.Session, error) {
+	var sess session.Session
+	var startedAt, lastEventAt int64
+	var status string
+	dest := append([]any{
+		&sess.ID, &sess.Agent, &sess.NativeID, &sess.CWD, &sess.HostID,
+		&startedAt, &lastEventAt, &status, &sess.PID, &sess.PIDStart, &sess.BootID,
+	}, extra...)
+	if err := rows.Scan(dest...); err != nil {
+		return session.Session{}, err
+	}
+	sess.StartedAt = time.Unix(startedAt, 0)
+	sess.LastEventAt = time.Unix(lastEventAt, 0)
+	sess.Status = session.State(status)
+	return sess, nil
 }
 
 func (s *Store) recentEvents(ctx context.Context, sessionID string, limit int) ([]session.Event, error) {
