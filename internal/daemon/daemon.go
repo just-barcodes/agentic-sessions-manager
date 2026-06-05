@@ -30,9 +30,10 @@ const (
 	// has died without a clean exit. Liveness checks are cheap (a few /proc reads each).
 	sweepInterval = 30 * time.Second
 
-	countTimeout     = 2 * time.Second // bound the waiting-count query for an alert sink
-	storeOpTimeout   = 5 * time.Second // bound a single event's store operations
-	natsReadyTimeout = 5 * time.Second // how long to wait for the embedded NATS server to accept connections
+	countTimeout     = 2 * time.Second  // bound the waiting-count query for an alert sink
+	storeOpTimeout   = 5 * time.Second  // bound a single event's store operations
+	sweepTimeout     = 25 * time.Second // bound a sweep's store work (< sweepInterval) so a stalled reap can't hold the handler mutex and starve event processing
+	natsReadyTimeout = 5 * time.Second  // how long to wait for the embedded NATS server to accept connections
 )
 
 func Run(_ []string) error {
@@ -167,6 +168,8 @@ func (h *handler) sweepLoop(ctx context.Context) {
 func (h *handler) sweep(ctx context.Context) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, sweepTimeout)
+	defer cancel()
 	reaped, err := h.store.ReapStale(ctx, h.hostID, liveness.IsProcessDead)
 	if err != nil {
 		log.Printf("daemon: reap stale: %v", err)
