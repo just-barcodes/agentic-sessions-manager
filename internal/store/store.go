@@ -117,6 +117,7 @@ func migrate(db *sql.DB) error {
 		`ALTER TABLE sessions ADD COLUMN pid INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE sessions ADD COLUMN pid_start INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE sessions ADD COLUMN boot_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN last_prompt TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, q := range alters {
 		if _, err := db.ExecContext(context.Background(), q); err != nil &&
@@ -188,25 +189,30 @@ func (s *Store) AppendEvent(ctx context.Context, e session.Event) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx,
+	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO events(session_id, ts, kind, payload) VALUES(?,?,?,?)`,
-		e.SessionID, e.Timestamp.Unix(), string(e.Kind), string(payload))
-	return err
+		e.SessionID, e.Timestamp.Unix(), string(e.Kind), string(payload)); err != nil {
+		return err
+	}
+	// Denormalize the latest user prompt onto the session row so ListSessions can
+	// read it directly instead of scanning the events table once per session.
+	if e.Kind == session.EventUserPrompt {
+		prompt, _ := e.Payload["prompt"].(string)
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE sessions SET last_prompt = ? WHERE id = ?`, prompt, e.SessionID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ListSessions returns sessions ordered most-recently-active first. When
 // includeFinished is false, sessions in the finished state are omitted.
 func (s *Store) ListSessions(ctx context.Context, includeFinished bool) ([]session.Session, error) {
 	query := `
-		SELECT s.id, s.agent, s.native_id, s.cwd, s.host_id, s.started_at, s.last_event_at, s.status, s.pid, s.pid_start, s.boot_id,
-			COALESCE((
-				SELECT json_extract(e.payload, '$.prompt')
-				FROM events e
-				WHERE e.session_id = s.id AND e.kind = ?
-				ORDER BY e.ts DESC, e.id DESC LIMIT 1
-			), '') AS last_prompt
+		SELECT s.id, s.agent, s.native_id, s.cwd, s.host_id, s.started_at, s.last_event_at, s.status, s.pid, s.pid_start, s.boot_id, s.last_prompt
 		FROM sessions s`
-	args := []any{string(session.EventUserPrompt)}
+	var args []any
 	if !includeFinished {
 		clause, targs := terminalNotIn("s.status")
 		query += ` WHERE ` + clause

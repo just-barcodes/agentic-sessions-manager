@@ -77,13 +77,14 @@ SQLite, single file at `~/.local/share/sm/sm.db`.
 ```sql
 sessions(id TEXT PK, agent TEXT, native_id TEXT, cwd TEXT, host_id TEXT,
          started_at INTEGER, last_event_at INTEGER, status TEXT,
-         pid INTEGER, pid_start INTEGER, boot_id TEXT)
+         pid INTEGER, pid_start INTEGER, boot_id TEXT, last_prompt TEXT)
 events  (id INTEGER PK, session_id TEXT, ts INTEGER, kind TEXT, payload JSON)
 -- UNIQUE(agent, native_id) where native_id != ''  → enforces 1:1 handoff
 -- (pid, pid_start, boot_id) is the agent process fingerprint used for liveness
+-- last_prompt caches the latest user_prompt text so `sm ls` needn't scan events
 ```
 
-- `pid` / `pid_start` / `boot_id` are added by an additive migration on open, so existing databases keep working.
+- `pid` / `pid_start` / `boot_id` / `last_prompt` are added by additive migrations on open, so existing databases keep working.
 
 - `host_id` is included from day one so cross-device data can coexist later without a migration.
 - History starts as events-only (state transitions, token counts when the hook supplies them). Schema extends cleanly to full transcripts later by adding a `transcripts` table or expanding the `events.payload` blob.
