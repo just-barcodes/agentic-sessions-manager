@@ -51,7 +51,7 @@ func TestSweepReapsAndRefreshesCount(t *testing.T) {
 		}},
 	}
 
-	h.sweep(ctx)
+	h.sweep()
 
 	all, err := st.ListSessions(ctx, true)
 	if err != nil {
@@ -92,9 +92,9 @@ func TestHandleAnswerResumesRunning(t *testing.T) {
 		}
 	}
 
-	h.handle(ctx, notif(session.NotifyElicitDialog, 0))            // agent asks
-	h.handle(ctx, notif(session.NotifyElicitResp, time.Second))    // user answers
-	h.handle(ctx, notif(session.NotifyIdle, 500*time.Millisecond)) // stale idle ping (older ts)
+	h.handle(notif(session.NotifyElicitDialog, 0))            // agent asks
+	h.handle(notif(session.NotifyElicitResp, time.Second))    // user answers
+	h.handle(notif(session.NotifyIdle, 500*time.Millisecond)) // stale idle ping (older ts)
 
 	all, err := st.ListSessions(ctx, true)
 	if err != nil {

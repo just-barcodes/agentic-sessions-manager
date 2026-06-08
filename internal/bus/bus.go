@@ -5,10 +5,10 @@
 package bus
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/nats-io/nats.go"
 
@@ -37,9 +37,10 @@ func Connect(url string) (*Bus, error) {
 
 func (b *Bus) Close() { b.conn.Close() }
 
-// Subscribe invokes handler for every event on sm.session.*.event until ctx is cancelled.
-func (b *Bus) Subscribe(ctx context.Context, handler func(session.Event)) error {
-	sub, err := b.conn.Subscribe(SubjectEventAll, func(m *nats.Msg) {
+// Subscribe invokes handler for every event on sm.session.*.event. The
+// subscription stays active until the bus is drained (see Drain) or closed.
+func (b *Bus) Subscribe(handler func(session.Event)) error {
+	_, err := b.conn.Subscribe(SubjectEventAll, func(m *nats.Msg) {
 		var e session.Event
 		if err := json.Unmarshal(m.Data, &e); err != nil {
 			log.Printf("bus: decode event: %v", err)
@@ -47,14 +48,25 @@ func (b *Bus) Subscribe(ctx context.Context, handler func(session.Event)) error 
 		}
 		handler(e)
 	})
-	if err != nil {
+	return err
+}
+
+// Drain stops the subscriptions gracefully: it processes any in-flight messages
+// so their handlers run to completion, then closes the connection. It blocks
+// until draining finishes or timeout elapses, so callers can safely tear down
+// resources the handlers touch (e.g. the store) once it returns.
+func (b *Bus) Drain(timeout time.Duration) error {
+	done := make(chan struct{})
+	b.conn.SetClosedHandler(func(*nats.Conn) { close(done) })
+	if err := b.conn.Drain(); err != nil {
 		return err
 	}
-	go func() {
-		<-ctx.Done()
-		_ = sub.Unsubscribe()
-	}()
-	return nil
+	select {
+	case <-done:
+		return nil
+	case <-time.After(timeout):
+		return fmt.Errorf("bus drain timed out after %s", timeout)
+	}
 }
 
 // Publish emits an event. SessionID may be empty for first-contact events

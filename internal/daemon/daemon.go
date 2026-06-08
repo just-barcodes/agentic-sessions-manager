@@ -33,6 +33,7 @@ const (
 	countTimeout     = 2 * time.Second  // bound the waiting-count query for an alert sink
 	storeOpTimeout   = 5 * time.Second  // bound a single event's store operations
 	sweepTimeout     = 25 * time.Second // bound a sweep's store work (< sweepInterval) so a stalled reap can't hold the handler mutex and starve event processing
+	drainTimeout     = 10 * time.Second // bound the shutdown bus drain (margin over storeOpTimeout, which bounds each in-flight handler)
 	natsReadyTimeout = 5 * time.Second  // how long to wait for the embedded NATS server to accept connections
 )
 
@@ -84,11 +85,22 @@ func Run(_ []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	if err := b.Subscribe(ctx, func(e session.Event) { h.handle(ctx, e) }); err != nil {
+	if err := b.Subscribe(func(e session.Event) { h.handle(e) }); err != nil {
 		return err
 	}
-	go h.sweepLoop(ctx)
+	var wg sync.WaitGroup
+	wg.Go(func() { h.sweepLoop(ctx) })
+
 	<-ctx.Done()
+	// Shut down in an order that guarantees no goroutine touches the store after
+	// the deferred st.Close() runs: first wait for the sweep loop to exit (it can
+	// hold h.mu mid-reap), then drain the bus so any in-flight event handler runs
+	// to completion. Store operations parent on context.Background(), so they are
+	// not aborted by the shutdown signal and finish cleanly.
+	wg.Wait()
+	if err := b.Drain(drainTimeout); err != nil {
+		log.Printf("daemon: bus drain: %v", err)
+	}
 	return nil
 }
 
@@ -102,10 +114,12 @@ type handler struct {
 	sinks  []alert.Sink
 }
 
-func (h *handler) handle(ctx context.Context, e session.Event) {
+func (h *handler) handle(e session.Event) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	ctx, cancel := context.WithTimeout(ctx, storeOpTimeout)
+	// Parent on Background, not the daemon's shutdown context: an in-flight event
+	// should persist cleanly during shutdown rather than be cancelled mid-write.
+	ctx, cancel := context.WithTimeout(context.Background(), storeOpTimeout)
 	defer cancel()
 
 	if e.Timestamp.IsZero() {
@@ -151,13 +165,13 @@ func (h *handler) handle(ctx context.Context, e session.Event) {
 func (h *handler) sweepLoop(ctx context.Context) {
 	t := time.NewTicker(sweepInterval)
 	defer t.Stop()
-	h.sweep(ctx)
+	h.sweep()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			h.sweep(ctx)
+			h.sweep()
 		}
 	}
 }
@@ -165,10 +179,12 @@ func (h *handler) sweepLoop(ctx context.Context) {
 // sweep marks dead sessions and notifies sinks so derived state (e.g. the
 // waiting-count file) reflects the reaping. Shares the handler mutex with
 // handle so reaping and event processing never interleave.
-func (h *handler) sweep(ctx context.Context) {
+func (h *handler) sweep() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	ctx, cancel := context.WithTimeout(ctx, sweepTimeout)
+	// Parent on Background, not the daemon's shutdown context, so a reap in
+	// progress finishes cleanly during shutdown (see handle).
+	ctx, cancel := context.WithTimeout(context.Background(), sweepTimeout)
 	defer cancel()
 	reaped, err := h.store.ReapStale(ctx, h.hostID, liveness.IsProcessDead)
 	if err != nil {

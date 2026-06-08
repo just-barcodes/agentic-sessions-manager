@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -50,7 +51,7 @@ func TestPublishSubscribeRoundTrip(t *testing.T) {
 	defer b.Close()
 
 	got := make(chan session.Event, 1)
-	if err := b.Subscribe(t.Context(), func(e session.Event) { got <- e }); err != nil {
+	if err := b.Subscribe(func(e session.Event) { got <- e }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -66,5 +67,37 @@ func TestPublishSubscribeRoundTrip(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("did not receive published event within timeout")
+	}
+}
+
+// TestDrainWaitsForInflightHandler verifies Drain's core guarantee: it does not
+// return until an event handler that is mid-execution has finished. The daemon
+// relies on this to ensure no handler is still touching the store when it closes
+// it during shutdown.
+func TestDrainWaitsForInflightHandler(t *testing.T) {
+	b, err := Connect(runTestNATS(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	started := make(chan struct{})
+	var done atomic.Bool
+	if err := b.Subscribe(func(session.Event) {
+		close(started)
+		time.Sleep(100 * time.Millisecond)
+		done.Store(true)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Publish(session.Event{Kind: session.EventNote}); err != nil {
+		t.Fatal(err)
+	}
+
+	<-started // the handler is now executing
+	if err := b.Drain(2 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if !done.Load() {
+		t.Error("Drain returned before the in-flight handler completed")
 	}
 }
