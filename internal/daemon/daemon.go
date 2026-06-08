@@ -144,16 +144,8 @@ func (h *handler) handle(e session.Event) {
 		return // don't fan out a state change we failed to persist
 	}
 
-	sess := session.Session{
-		ID:       e.SessionID,
-		Agent:    e.Agent,
-		NativeID: e.NativeID,
-		CWD:      asString(e.Payload["cwd"]),
-		HostID:   h.hostID,
-		Status:   next,
-	}
 	for _, sink := range h.sinks {
-		if err := sink.OnStateChange(sess); err != nil {
+		if err := sink.OnStateChange(e.SessionID, next); err != nil {
 			log.Printf("daemon: sink: %v", err)
 		}
 	}
@@ -193,7 +185,7 @@ func (h *handler) sweep() {
 	}
 	for _, sess := range reaped {
 		for _, sink := range h.sinks {
-			if err := sink.OnStateChange(sess); err != nil {
+			if err := sink.OnStateChange(sess.ID, sess.Status); err != nil {
 				log.Printf("daemon: sink: %v", err)
 			}
 		}

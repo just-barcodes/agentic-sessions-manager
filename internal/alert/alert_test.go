@@ -16,7 +16,7 @@ func TestCountFileWritesCount(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "waiting-count")
 	c := CountFile{Path: path, Count: func() (int, error) { return 3, nil }}
 
-	if err := c.OnStateChange(session.Session{}); err != nil {
+	if err := c.OnStateChange("s1", session.StateWaiting); err != nil {
 		t.Fatalf("OnStateChange: %v", err)
 	}
 
@@ -36,7 +36,7 @@ func TestCountFileCountError(t *testing.T) {
 	sentinel := errors.New("count failed")
 	c := CountFile{Path: path, Count: func() (int, error) { return 0, sentinel }}
 
-	if err := c.OnStateChange(session.Session{}); !errors.Is(err, sentinel) {
+	if err := c.OnStateChange("s1", session.StateWaiting); !errors.Is(err, sentinel) {
 		t.Fatalf("OnStateChange error = %v, want %v", err, sentinel)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {

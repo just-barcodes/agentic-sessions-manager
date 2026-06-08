@@ -11,8 +11,11 @@ import (
 	"github.com/just-barcodes/agentic-sessions-manager/internal/session"
 )
 
+// Sink receives a notification that the session with the given id moved to
+// newState. That is the whole signal a state change carries; sinks that need
+// more (cwd, agent, ...) should read the store by id.
 type Sink interface {
-	OnStateChange(sess session.Session) error
+	OnStateChange(id string, newState session.State) error
 }
 
 // CountFile maintains a small "waiting count" file that walker / status bars
@@ -22,7 +25,7 @@ type CountFile struct {
 	Count func() (int, error)
 }
 
-func (c CountFile) OnStateChange(_ session.Session) error {
+func (c CountFile) OnStateChange(_ string, _ session.State) error {
 	n, err := c.Count()
 	if err != nil {
 		return err
