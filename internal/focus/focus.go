@@ -86,23 +86,9 @@ func focusTmux(sys System, pane string) error {
 	}
 	session = strings.TrimSpace(session)
 
-	// Prefer a client already viewing the session (non-intrusive: just raise it).
-	pid, tty, ok, err := pickClient(sys, "-t", session)
+	pid, tty, switchNeeded, err := pickSessionClient(sys, session)
 	if err != nil {
 		return err
-	}
-	switchNeeded := false
-	if !ok {
-		// No client on this session: take the most-recently-active client
-		// anywhere and switch it to the session.
-		pid, tty, ok, err = pickClient(sys)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return fmt.Errorf("tmux session %q has no attached client; attach a terminal to it first", session)
-		}
-		switchNeeded = true
 	}
 
 	addr, err := windowAddrFor(sys, pid)
@@ -151,6 +137,28 @@ func windowAddrFor(sys System, pid int) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no hyprland window owns the process tree (pids %v)", chain)
+}
+
+// pickSessionClient finds the tmux client to drive when focusing a pane in
+// session: it prefers a client already viewing the session (just raise it), and
+// otherwise falls back to the most-recently-active client anywhere — reporting
+// switchNeeded so the caller switches that client to the session first.
+func pickSessionClient(sys System, session string) (pid int, tty string, switchNeeded bool, err error) {
+	pid, tty, ok, err := pickClient(sys, "-t", session)
+	if err != nil {
+		return 0, "", false, err
+	}
+	if ok {
+		return pid, tty, false, nil
+	}
+	pid, tty, ok, err = pickClient(sys)
+	if err != nil {
+		return 0, "", false, err
+	}
+	if !ok {
+		return 0, "", false, fmt.Errorf("tmux session %q has no attached client; attach a terminal to it first", session)
+	}
+	return pid, tty, true, nil
 }
 
 // pickClient returns the most-recently-active tmux client matching the given
