@@ -171,6 +171,9 @@ func TestListSessionsLastPrompt(t *testing.T) {
 	ev("s", "tool_use", now.Add(-1*time.Minute), map[string]any{"name": "Bash"})
 	ev("s", "user_prompt", now, map[string]any{"prompt": "newest prompt"})
 	ev("none", "tool_use", now, map[string]any{"name": "Read"})
+	// A straggler delivered late with an older timestamp (clock step, replay)
+	// must not overwrite the newest prompt.
+	ev("s", "user_prompt", now.Add(-3*time.Minute), map[string]any{"prompt": "stale straggler"})
 
 	all, err := st.ListSessions(ctx, true)
 	if err != nil {
@@ -421,5 +424,75 @@ func TestMigrateExistingDB(t *testing.T) {
 	}
 	if len(reaped) != 0 {
 		t.Errorf("pre-identity row (pid 0) is un-probeable, but %d reaped", len(reaped))
+	}
+}
+
+// TestMigrateBackfillsLastPrompt guards upgrades: a database from before the
+// last_prompt column existed must have it populated from the existing
+// user_prompt events, or `sm ls` would show blank prompts for every
+// pre-upgrade session until a new prompt arrived.
+func TestMigrateBackfillsLastPrompt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sm.db")
+
+	// Stand up the pre-last_prompt schema with a session and its events, the way
+	// an older sm would have left it.
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE sessions (
+		id TEXT PRIMARY KEY, agent TEXT NOT NULL, native_id TEXT NOT NULL DEFAULT '',
+		cwd TEXT NOT NULL, host_id TEXT NOT NULL, started_at INTEGER NOT NULL,
+		last_event_at INTEGER NOT NULL, status TEXT NOT NULL,
+		pid INTEGER NOT NULL DEFAULT 0, pid_start INTEGER NOT NULL DEFAULT 0,
+		boot_id TEXT NOT NULL DEFAULT '')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		session_id TEXT NOT NULL REFERENCES sessions(id),
+		ts INTEGER NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO sessions VALUES
+		('with','claude','','/tmp','h',0,0,'running',0,0,''),
+		('none','claude','','/tmp','h',0,0,'running',0,0,'')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range []struct {
+		ts            int
+		kind, payload string
+	}{
+		{100, "user_prompt", `{"prompt":"first"}`},
+		{200, "user_prompt", `{"prompt":"latest"}`},
+		{300, "tool_use", `{"name":"Bash"}`},
+	} {
+		if _, err := db.Exec(
+			`INSERT INTO events(session_id, ts, kind, payload) VALUES('with',?,?,?)`,
+			ev.ts, ev.kind, ev.payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open on pre-last_prompt DB: %v", err)
+	}
+	defer st.Close()
+
+	all, err := st.ListSessions(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, s := range all {
+		got[s.ID] = s.LastPrompt
+	}
+	if got["with"] != "latest" {
+		t.Errorf("backfilled LastPrompt = %q, want %q", got["with"], "latest")
+	}
+	if got["none"] != "" {
+		t.Errorf("session with no prompts: LastPrompt = %q, want empty", got["none"])
 	}
 }

@@ -109,6 +109,17 @@ func DataDir() string {
 // DefaultDBPath is the path to the sm database within DataDir.
 func DefaultDBPath() string { return filepath.Join(DataDir(), "sm.db") }
 
+// latestPromptSQL computes a session's most recent user_prompt text from the
+// events table (newest ts wins, event id breaks ties). Correlated on
+// sessions.id so it slots into any statement over sessions; binds one arg,
+// the user_prompt event kind.
+const latestPromptSQL = `COALESCE((
+	SELECT json_extract(e.payload, '$.prompt')
+	FROM events e
+	WHERE e.session_id = sessions.id AND e.kind = ?
+	ORDER BY e.ts DESC, e.id DESC LIMIT 1
+), '')`
+
 // migrate applies additive column migrations. Re-running is safe: adding a
 // column that already exists errors with "duplicate column name", which we
 // ignore so existing databases pick up the new columns on next open.
@@ -117,7 +128,6 @@ func migrate(db *sql.DB) error {
 		`ALTER TABLE sessions ADD COLUMN pid INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE sessions ADD COLUMN pid_start INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE sessions ADD COLUMN boot_id TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE sessions ADD COLUMN last_prompt TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, q := range alters {
 		if _, err := db.ExecContext(context.Background(), q); err != nil &&
@@ -125,7 +135,21 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
-	return nil
+	// last_prompt is a denormalized cache of the events table. The first time the
+	// column is added, backfill it so sessions recorded before the upgrade keep
+	// their prompts; on later opens the ALTER fails as a duplicate and the
+	// backfill is skipped.
+	if _, err := db.ExecContext(context.Background(),
+		`ALTER TABLE sessions ADD COLUMN last_prompt TEXT NOT NULL DEFAULT ''`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+		return nil
+	}
+	_, err := db.ExecContext(context.Background(),
+		`UPDATE sessions SET last_prompt = `+latestPromptSQL,
+		string(session.EventUserPrompt))
+	return err
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -189,21 +213,29 @@ func (s *Store) AppendEvent(ctx context.Context, e session.Event) error {
 	if err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO events(session_id, ts, kind, payload) VALUES(?,?,?,?)`,
 		e.SessionID, e.Timestamp.Unix(), string(e.Kind), string(payload)); err != nil {
 		return err
 	}
 	// Denormalize the latest user prompt onto the session row so ListSessions can
 	// read it directly instead of scanning the events table once per session.
+	// Recomputing from events (newest ts wins) rather than taking e's payload
+	// means an out-of-order prompt cannot overwrite a newer one, and the shared
+	// transaction keeps the cached column consistent with the insert.
 	if e.Kind == session.EventUserPrompt {
-		prompt, _ := e.Payload["prompt"].(string)
-		if _, err := s.db.ExecContext(ctx,
-			`UPDATE sessions SET last_prompt = ? WHERE id = ?`, prompt, e.SessionID); err != nil {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE sessions SET last_prompt = `+latestPromptSQL+` WHERE id = ?`,
+			string(session.EventUserPrompt), e.SessionID); err != nil {
 			return err
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 // ListSessions returns sessions ordered most-recently-active first. When

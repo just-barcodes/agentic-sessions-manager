@@ -84,7 +84,7 @@ events  (id INTEGER PK, session_id TEXT, ts INTEGER, kind TEXT, payload JSON)
 -- last_prompt caches the latest user_prompt text so `sm ls` needn't scan events
 ```
 
-- `pid` / `pid_start` / `boot_id` / `last_prompt` are added by additive migrations on open, so existing databases keep working.
+- `pid` / `pid_start` / `boot_id` / `last_prompt` are added by additive migrations on open, so existing databases keep working. When `last_prompt` is first added it is backfilled from existing events, so pre-upgrade sessions keep their prompts.
 
 - `host_id` is included from day one so cross-device data can coexist later without a migration.
 - History starts as events-only (state transitions, token counts when the hook supplies them). Schema extends cleanly to full transcripts later by adding a `transcripts` table or expanding the `events.payload` blob.
