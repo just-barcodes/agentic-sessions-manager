@@ -69,6 +69,12 @@ NATS pub/sub on `localhost:4222`.
 - Subjects: `sm.session.<uuid>.event` (events from session).
 - NATS is overkill for single-host but chosen deliberately: zero rewrite when we later add cross-device support (just point hooks at a remote NATS).
 - The daemon runs an embedded NATS server (no separate install) for the MVP.
+- The bus requires token auth: the daemon generates an owner-only token at
+  `~/.local/share/sm/bus-token` on startup and clients read it from there.
+  Loopback is reachable by every local process; the token is what scopes the
+  bus to your user.
+- Clients honor `SM_BUS_URL` to dial a non-default bus (e.g. a tailnet address
+  or an SSH-forwarded port).
 
 ### Storage
 

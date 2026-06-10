@@ -5,9 +5,15 @@
 package bus
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -23,16 +29,79 @@ const (
 // DefaultURL is the local embedded NATS server the daemon starts on launch.
 const DefaultURL = "nats://127.0.0.1:4222"
 
+// URL returns the bus URL clients should dial: $SM_BUS_URL when set (e.g. a
+// tailnet address or an SSH-forwarded port), otherwise DefaultURL.
+func URL() string {
+	if v := os.Getenv("SM_BUS_URL"); v != "" {
+		return v
+	}
+	return DefaultURL
+}
+
 type Bus struct {
 	conn *nats.Conn
 }
 
-func Connect(url string) (*Bus, error) {
-	c, err := nats.Connect(url)
+// Connect dials the bus at url, authenticating with token when non-empty.
+func Connect(url, token string) (*Bus, error) {
+	c, err := nats.Connect(url, tokenOpts(token)...)
 	if err != nil {
 		return nil, fmt.Errorf("nats connect: %w", err)
 	}
 	return &Bus{conn: c}, nil
+}
+
+// ConnectInProcess connects directly to an in-process NATS server, bypassing
+// TCP. The daemon uses this for its own subscription on the server it embeds.
+func ConnectInProcess(srv nats.InProcessConnProvider, token string) (*Bus, error) {
+	c, err := nats.Connect("", append(tokenOpts(token), nats.InProcessServer(srv))...)
+	if err != nil {
+		return nil, fmt.Errorf("nats connect in-process: %w", err)
+	}
+	return &Bus{conn: c}, nil
+}
+
+func tokenOpts(token string) []nats.Option {
+	if token == "" {
+		return nil
+	}
+	return []nats.Option{nats.Token(token)}
+}
+
+// LoadToken reads the bus auth token from path. A missing file is not an
+// error: it returns "" so clients attempt an unauthenticated connection, which
+// the server rejects with a clear authorization error if it requires one.
+func LoadToken(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(b)), nil
+}
+
+// EnsureToken returns the token at path, generating and persisting a new one
+// if the file does not exist. The daemon calls this on startup; the file is
+// owner-only like the rest of the data dir.
+func EnsureToken(path string) (string, error) {
+	tok, err := LoadToken(path)
+	if err != nil || tok != "" {
+		return tok, err
+	}
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	tok = hex.EncodeToString(b[:])
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, []byte(tok+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return tok, nil
 }
 
 func (b *Bus) Close() { b.conn.Close() }

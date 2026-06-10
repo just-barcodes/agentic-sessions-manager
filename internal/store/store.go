@@ -109,6 +109,10 @@ func DataDir() string {
 // DefaultDBPath is the path to the sm database within DataDir.
 func DefaultDBPath() string { return filepath.Join(DataDir(), "sm.db") }
 
+// BusTokenPath is the path to the bus auth token within DataDir, so the daemon
+// and clients always agree on its location.
+func BusTokenPath() string { return filepath.Join(DataDir(), "bus-token") }
+
 // latestPromptSQL computes a session's most recent user_prompt text from the
 // events table (newest ts wins, event id breaks ties). Correlated on
 // sessions.id so it slots into any statement over sessions; binds one arg,

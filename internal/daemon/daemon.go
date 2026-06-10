@@ -50,7 +50,12 @@ func Run(_ []string) error {
 	}
 	defer st.Close()
 
-	ns, err := startEmbeddedNATS("127.0.0.1", 4222)
+	token, err := bus.EnsureToken(store.BusTokenPath())
+	if err != nil {
+		return err
+	}
+
+	ns, err := startEmbeddedNATS("127.0.0.1", 4222, token)
 	if err != nil {
 		return err
 	}
@@ -59,7 +64,7 @@ func Run(_ []string) error {
 		ns.WaitForShutdown()
 	}()
 
-	b, err := bus.Connect(bus.DefaultURL)
+	b, err := bus.ConnectInProcess(ns, token)
 	if err != nil {
 		return err
 	}
@@ -253,13 +258,16 @@ func newID() string {
 
 // startEmbeddedNATS boots an in-process NATS server bound to localhost so the
 // daemon owns the bus end-to-end. Logging is suppressed; bind failures surface
-// as a ReadyForConnections timeout.
-func startEmbeddedNATS(host string, port int) (*natsserver.Server, error) {
+// as a ReadyForConnections timeout. All client connections must authenticate
+// with token — loopback is reachable by every local process, so the token is
+// what scopes the bus to this user.
+func startEmbeddedNATS(host string, port int, token string) (*natsserver.Server, error) {
 	opts := &natsserver.Options{
-		Host:   host,
-		Port:   port,
-		NoLog:  true,
-		NoSigs: true, // the daemon owns signal handling
+		Host:          host,
+		Port:          port,
+		Authorization: token,
+		NoLog:         true,
+		NoSigs:        true, // the daemon owns signal handling
 	}
 	if port <= 1024 || port > 65535 {
 		return nil, fmt.Errorf("create nats server: invalid port number")

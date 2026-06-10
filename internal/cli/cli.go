@@ -235,7 +235,11 @@ func Emit(args []string) error {
 		}
 	}
 
-	b, err := bus.Connect(bus.DefaultURL)
+	token, err := bus.LoadToken(store.BusTokenPath())
+	if err != nil {
+		return err
+	}
+	b, err := bus.Connect(bus.URL(), token)
 	if err != nil {
 		return err
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/just-barcodes/agentic-sessions-manager/internal/bus"
 	"github.com/just-barcodes/agentic-sessions-manager/internal/liveness"
 	"github.com/just-barcodes/agentic-sessions-manager/internal/session"
+	"github.com/just-barcodes/agentic-sessions-manager/internal/store"
 )
 
 // attachIdentity fingerprints the agent process that launched this hook so the
@@ -137,7 +138,11 @@ func claudeNotify(typ, msg string) session.NotifyType {
 
 // publish connects to the bus, emits e, and closes the connection.
 func publish(e session.Event) error {
-	b, err := bus.Connect(bus.DefaultURL)
+	token, err := bus.LoadToken(store.BusTokenPath())
+	if err != nil {
+		return fmt.Errorf("bus token: %w", err)
+	}
+	b, err := bus.Connect(bus.URL(), token)
 	if err != nil {
 		return fmt.Errorf("nats connect: %w", err)
 	}
