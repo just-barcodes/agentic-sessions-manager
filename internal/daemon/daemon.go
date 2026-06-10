@@ -55,7 +55,11 @@ func Run(_ []string) error {
 		return err
 	}
 
-	ns, err := startEmbeddedNATS("127.0.0.1", 4222, token)
+	host, port, err := bus.HostPort(bus.URL())
+	if err != nil {
+		return err
+	}
+	ns, err := startEmbeddedNATS(host, port, token)
 	if err != nil {
 		return err
 	}

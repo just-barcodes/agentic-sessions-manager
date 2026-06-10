@@ -106,6 +106,27 @@ func TestEnsureToken(t *testing.T) {
 	}
 }
 
+// TestHostPort covers parsing a bus URL into the embedded server's bind
+// address: the default URL, a port override, and rejection of URLs without a
+// usable port (the daemon must never guess where to bind).
+func TestHostPort(t *testing.T) {
+	host, port, err := HostPort(DefaultURL)
+	if err != nil || host != "127.0.0.1" || port != 4222 {
+		t.Errorf("HostPort(DefaultURL) = (%q, %d, %v), want (\"127.0.0.1\", 4222, nil)", host, port, err)
+	}
+
+	host, port, err = HostPort("nats://127.0.0.1:14222")
+	if err != nil || host != "127.0.0.1" || port != 14222 {
+		t.Errorf("HostPort override = (%q, %d, %v), want (\"127.0.0.1\", 14222, nil)", host, port, err)
+	}
+
+	for _, bad := range []string{"nats://127.0.0.1", "nats://127.0.0.1:nope", "::not-a-url"} {
+		if _, _, err := HostPort(bad); err == nil {
+			t.Errorf("HostPort(%q) succeeded, want error", bad)
+		}
+	}
+}
+
 // TestSessionKey covers the subject routing for first-contact events: an empty
 // session id maps to the "new" token so the daemon's wildcard subscription still
 // receives events before a UUID is assigned.

@@ -11,8 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,6 +38,21 @@ func URL() string {
 		return v
 	}
 	return DefaultURL
+}
+
+// HostPort splits a bus URL into the host and port the daemon's embedded
+// server binds. The port must be explicit so the daemon and its clients can
+// never silently disagree about where the bus lives.
+func HostPort(rawURL string) (string, int, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", 0, fmt.Errorf("bus url: %w", err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		return "", 0, fmt.Errorf("bus url %q: missing or invalid port", rawURL)
+	}
+	return u.Hostname(), port, nil
 }
 
 type Bus struct {

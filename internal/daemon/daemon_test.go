@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +11,7 @@ import (
 	"time"
 
 	"github.com/just-barcodes/agentic-sessions-manager/internal/alert"
+	"github.com/just-barcodes/agentic-sessions-manager/internal/bus"
 	"github.com/just-barcodes/agentic-sessions-manager/internal/session"
 	"github.com/just-barcodes/agentic-sessions-manager/internal/store"
 )
@@ -106,4 +109,37 @@ func TestHandleAnswerResumesRunning(t *testing.T) {
 	if all[0].Status != session.StateRunning {
 		t.Fatalf("after answering, status = %q, want running", all[0].Status)
 	}
+}
+
+// TestEmbeddedNATSHonorsBusURL verifies the daemon and its clients agree on
+// SM_BUS_URL: the embedded server bound to the host/port parsed from bus.URL()
+// accepts a token-auth client dialing that same URL.
+func TestEmbeddedNATSHonorsBusURL(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	l.Close()
+	t.Setenv("SM_BUS_URL", fmt.Sprintf("nats://127.0.0.1:%d", port))
+
+	host, p, err := bus.HostPort(bus.URL())
+	if err != nil {
+		t.Fatalf("HostPort(URL()): %v", err)
+	}
+	const token = "test-token"
+	ns, err := startEmbeddedNATS(host, p, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ns.Shutdown()
+		ns.WaitForShutdown()
+	}()
+
+	b, err := bus.Connect(bus.URL(), token)
+	if err != nil {
+		t.Fatalf("Connect(bus.URL()) against the override-bound server: %v", err)
+	}
+	b.Close()
 }
