@@ -10,13 +10,31 @@ jump to the one that's waiting.
 Uses [Task](https://taskfile.dev) (`Taskfile.yml`):
 
 - `task build` — build the `./sm` binary (`go build -o ./sm ./cmd/sm`)
-- `task test` — `go vet ./...` + `go build ./...` (the named suite is `go test ./...`)
+- `task test` — fast checks: `go vet ./...` + `go build ./...`
+- `task bdd` — run the Gherkin BDD suite end to end (progress format)
 - `task install` — install to `~/.local/bin/sm`
 - `task run` — run the daemon in the foreground
 - `task fmt` — `gofmt -w .`
 - `task smoke` — emit a 3-event sequence end to end (daemon must be running)
 
-Run the real Go test suite with `go test ./...`. Always `gofmt` before committing.
+The full suite is `go test ./...` (includes the BDD scenarios; `-short` skips
+them). Always `gofmt` before committing.
+
+### BDD suite (`bdd/`)
+
+Gherkin features in `bdd/features/` run via godog under `go test ./bdd`,
+driving the real binary through the production path (hook stdin → NATS →
+daemon → SQLite → `sm ls`). Every scenario gets a hermetic world
+(`bdd/world_test.go`): its own XDG dirs (DB, bus token, waiting-count) and
+its own `SM_BUS_URL` port — the live daemon and `~/.local/share/sm` are never
+touched. List/count assertions poll (2s deadline) and attach daemon stderr on
+failure.
+
+To add a feature: drop a `.feature` file in `bdd/features/`, run `task bdd`
+to see the undefined steps, then implement them in `bdd/steps_test.go` as
+one-liners over the world helpers and the hook-JSON builders in
+`bdd/fixtures_test.go`. Run one scenario by name (spaces → underscores):
+`go test ./bdd -run 'TestFeatures/A_brand-new_session_appears_in_the_session_list'`.
 
 ## Architecture
 

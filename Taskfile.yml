@@ -45,10 +45,15 @@ tasks:
       - go mod tidy
 
   test:
-    desc: Vet and build all packages (placeholder until a real suite exists)
+    desc: Fast checks — vet and build (the full suite is `go test ./...`)
     cmds:
       - go vet ./...
       - go build ./...
+
+  bdd:
+    desc: Run the Gherkin BDD scenarios end to end (builds its own binary)
+    cmds:
+      - go test ./bdd -count=1 -godog.format=progress
 
   clean:
     desc: Remove the local build artifact

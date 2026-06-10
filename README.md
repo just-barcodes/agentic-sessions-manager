@@ -137,6 +137,8 @@ Runs as a systemd **user** service: `systemctl --user start sm`. Starts on login
 - Language: Go.
 - Storage: SQLite (`modernc.org/sqlite`).
 - Transport: embedded NATS (`nats-server` as a library).
+- Behavior is specified as Gherkin scenarios in `bdd/features/`, run end to
+  end against the real binary with `task bdd` (see CLAUDE.md for authoring).
 - Hook scripts: small shell snippets shipped with the project; user adds them to their Claude Code / opencode config.
 - Modular boundaries: agent adapters (claude, opencode, future) live behind a thin interface so adding a new agent only means writing hook scripts + an event mapper.
 
