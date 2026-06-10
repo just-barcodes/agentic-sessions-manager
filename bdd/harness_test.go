@@ -1,11 +1,11 @@
 package bdd
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestDaemonLifecycle is the harness spike: a per-test daemon starts
@@ -56,36 +56,43 @@ func TestHookSessionSurvivesReaper(t *testing.T) {
 		t.Fatalf("sm hook claude: %v\n%s", err, out)
 	}
 
+	// listAll runs `sm ls --all` (itself a reap pass) and parses the rows.
+	listAll := func() ([]lsRow, error) {
+		out, err := w.sm(nil, "ls", "--all")
+		if err != nil {
+			return nil, fmt.Errorf("sm ls: %v\n%s", err, out)
+		}
+		return parseLS(out)
+	}
+
 	// Wait for the event to land (delivery is async), then keep listing: each
 	// call reaps, and the session must stay idle rather than turn dead.
-	deadline := time.Now().Add(2 * time.Second)
-	var out string
-	for {
-		var err error
-		out, err = w.sm(nil, "ls", "--all")
+	if err := eventually(func() error {
+		rows, err := listAll()
 		if err != nil {
-			t.Fatalf("sm ls: %v\n%s", err, out)
+			return err
 		}
-		if strings.Contains(out, "claude") || time.Now().After(deadline) {
-			break
+		if len(rows) != 1 || rows[0].agent != "claude" {
+			return fmt.Errorf("claude session not listed yet: %+v", rows)
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if !strings.Contains(out, "claude") {
-		t.Fatalf("session never appeared in sm ls\nlast output:\n%s\ndaemon stderr:\n%s", out, w.daemonStderr())
+		return nil
+	}); err != nil {
+		t.Fatalf("session never appeared in sm ls: %v\ndaemon stderr:\n%s", err, w.daemonStderr())
 	}
 
 	for range 3 {
-		var err error
-		out, err = w.sm(nil, "ls", "--all")
+		rows, err := listAll()
 		if err != nil {
-			t.Fatalf("sm ls: %v\n%s", err, out)
+			t.Fatal(err)
 		}
-		if strings.Contains(out, "dead") {
-			t.Fatalf("session was reaped despite a live ancestor\noutput:\n%s\ndaemon stderr:\n%s", out, w.daemonStderr())
+		if len(rows) != 1 {
+			t.Fatalf("expected the one hooked session, got %+v", rows)
 		}
-	}
-	if !strings.Contains(out, "idle") {
-		t.Fatalf("session not idle after reap passes\noutput:\n%s", out)
+		if rows[0].status == "dead" {
+			t.Fatalf("session was reaped despite a live ancestor: %+v\ndaemon stderr:\n%s", rows[0], w.daemonStderr())
+		}
+		if rows[0].status != "idle" {
+			t.Fatalf("session status = %q after a reap pass, want idle", rows[0].status)
+		}
 	}
 }

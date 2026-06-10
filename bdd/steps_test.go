@@ -17,9 +17,12 @@ import (
 )
 
 const (
-	assertTimeout = 2 * time.Second        // event delivery is async; poll list/count assertions up to this long
-	assertEvery   = 20 * time.Millisecond  // polling interval for eventually
-	settleTime    = 300 * time.Millisecond // grace before asserting something did NOT happen
+	assertTimeout = 2 * time.Second       // event delivery is async; poll list/count assertions up to this long
+	assertEvery   = 20 * time.Millisecond // polling interval for eventually
+	// settleTime is the grace before asserting something did NOT happen — a
+	// negative assertion can't poll for success. Hook→daemon→store round
+	// trips measure well under 50ms locally, so 300ms is ~6× headroom.
+	settleTime = 300 * time.Millisecond
 )
 
 // scenario is the per-scenario state: the hermetic world plus what the
@@ -188,15 +191,24 @@ func (s *scenario) thatSessionIs(agent, project string) error {
 	return nil
 }
 
+// thatSessionStateIs re-polls rather than trusting the snapshot a count-only
+// assertion cached: a session can win the count race while its state is
+// still settling.
 func (s *scenario) thatSessionStateIs(state string) error {
-	row, err := s.theSession()
-	if err != nil {
-		return err
-	}
-	if row.status != state {
-		return fmt.Errorf("session state is %q, want %q", row.status, state)
-	}
-	return nil
+	return s.eventually(func() error {
+		rows, err := s.listSessions()
+		if err != nil {
+			return err
+		}
+		if len(rows) != 1 {
+			return fmt.Errorf(`"that session" needs exactly 1 listed session, have %d`, len(rows))
+		}
+		s.rows = rows
+		if rows[0].status != state {
+			return fmt.Errorf("session state is %q, want %q", rows[0].status, state)
+		}
+		return nil
+	})
 }
 
 func (s *scenario) listContainsSession(agent, project, state string) error {
@@ -216,7 +228,8 @@ func (s *scenario) listContainsSession(agent, project, state string) error {
 
 // waitingCountIs reads the alert-sink file the daemon maintains for status
 // bars. The file must exist — absence means the sink never fired, which is a
-// failure, not a pass.
+// failure, not a pass. The path mirrors the sink wiring in daemon.Run
+// ($XDG_STATE_HOME/sm/waiting-count); if that moves, this must follow.
 func (s *scenario) waitingCountIs(n int) error {
 	path := filepath.Join(s.w.stateDir, "sm", "waiting-count")
 	return s.eventually(func() error {
@@ -280,8 +293,17 @@ func (s *scenario) runHook(agent, input string) error {
 }
 
 // eventually polls check until it succeeds or the assertion deadline passes;
-// the last failure is returned with the daemon's stderr attached.
+// the scenario flavor attaches the daemon's stderr to the last failure.
 func (s *scenario) eventually(check func() error) error {
+	if err := eventually(check); err != nil {
+		return fmt.Errorf("%w\ndaemon stderr:\n%s", err, s.w.daemonStderr())
+	}
+	return nil
+}
+
+// eventually is the package-level polling primitive shared by step
+// definitions and harness tests.
+func eventually(check func() error) error {
 	deadline := time.Now().Add(assertTimeout)
 	for {
 		err := check()
@@ -289,7 +311,7 @@ func (s *scenario) eventually(check func() error) error {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("%w\ndaemon stderr:\n%s", err, s.w.daemonStderr())
+			return err
 		}
 		time.Sleep(assertEvery)
 	}
@@ -306,6 +328,14 @@ func (s *scenario) listSessions() ([]lsRow, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sm ls: %v\n%s", err, out)
 	}
+	return parseLS(out)
+}
+
+// parseLS splits `sm ls` output into rows by whitespace. Field indices
+// follow the header (ID AGENT STATUS STARTED LAST CWD): STARTED and LAST
+// are "date time" pairs, putting CWD at field 7. CWDs in this suite come
+// from os.MkdirTemp, so they never contain spaces.
+func parseLS(out string) ([]lsRow, error) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	var rows []lsRow
 	for _, line := range lines[1:] { // skip the header

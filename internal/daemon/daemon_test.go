@@ -113,33 +113,40 @@ func TestHandleAnswerResumesRunning(t *testing.T) {
 
 // TestEmbeddedNATSHonorsBusURL verifies the daemon and its clients agree on
 // SM_BUS_URL: the embedded server bound to the host/port parsed from bus.URL()
-// accepts a token-auth client dialing that same URL.
+// accepts a token-auth client dialing that same URL. The pick-then-bind free
+// port has a TOCTOU window, so a stolen port is retried rather than failed.
 func TestEmbeddedNATSHonorsBusURL(t *testing.T) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	l.Close()
-	t.Setenv("SM_BUS_URL", fmt.Sprintf("nats://127.0.0.1:%d", port))
-
-	host, p, err := bus.HostPort(bus.URL())
-	if err != nil {
-		t.Fatalf("HostPort(URL()): %v", err)
-	}
 	const token = "test-token"
-	ns, err := startEmbeddedNATS(host, p, token)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		ns.Shutdown()
-		ns.WaitForShutdown()
-	}()
+	var lastErr error
+	for range 3 {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := l.Addr().(*net.TCPAddr).Port
+		l.Close()
+		t.Setenv("SM_BUS_URL", fmt.Sprintf("nats://127.0.0.1:%d", port))
 
-	b, err := bus.Connect(bus.URL(), token)
-	if err != nil {
-		t.Fatalf("Connect(bus.URL()) against the override-bound server: %v", err)
+		host, p, err := bus.HostPort(bus.URL())
+		if err != nil {
+			t.Fatalf("HostPort(URL()): %v", err)
+		}
+		ns, err := startEmbeddedNATS(host, p, token)
+		if err != nil {
+			lastErr = err // port likely taken in the pick-bind window; retry
+			continue
+		}
+		defer func() {
+			ns.Shutdown()
+			ns.WaitForShutdown()
+		}()
+
+		b, err := bus.Connect(bus.URL(), token)
+		if err != nil {
+			t.Fatalf("Connect(bus.URL()) against the override-bound server: %v", err)
+		}
+		b.Close()
+		return
 	}
-	b.Close()
+	t.Fatalf("embedded NATS failed to bind a fresh free port after 3 attempts: %v", lastErr)
 }
