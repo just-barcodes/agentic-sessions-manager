@@ -218,12 +218,16 @@ func (h *handler) resolveSession(ctx context.Context, e *session.Event) error {
 		}
 	}
 	e.SessionID = newID()
+	hostID := e.HostID // hook-stamped origin host; keeps remote sessions out of the local /proc reaper
+	if hostID == "" {
+		hostID = h.hostID
+	}
 	return h.store.CreateSession(ctx, session.Session{
 		ID:          e.SessionID,
 		Agent:       e.Agent,
 		NativeID:    e.NativeID,
 		CWD:         asString(e.Payload["cwd"]),
-		HostID:      h.hostID,
+		HostID:      hostID,
 		StartedAt:   e.Timestamp,
 		LastEventAt: e.Timestamp,
 		Status:      session.StateIdle,

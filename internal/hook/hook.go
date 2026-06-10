@@ -20,11 +20,17 @@ import (
 )
 
 // attachIdentity fingerprints the agent process that launched this hook so the
-// daemon can later tell whether the session is still alive. Best-effort: if no
-// durable ancestor is found the session is simply left un-probeable.
+// daemon can later tell whether the session is still alive, and stamps the
+// hostname so sessions from remote machines keep their own host_id (the
+// daemon's /proc reaper must not probe pids that live on another machine).
+// Best-effort: if no durable ancestor is found the session is simply left
+// un-probeable.
 func attachIdentity(e *session.Event) {
 	if id, ok := liveness.Capture(); ok {
 		e.PID, e.PIDStart, e.BootID = id.PID, id.Start, id.BootID
+	}
+	if host, err := os.Hostname(); err == nil {
+		e.HostID = host
 	}
 }
 

@@ -132,6 +132,32 @@ within the observe-only scope. A session whose process was never fingerprinted
 
 Runs as a systemd **user** service: `systemctl --user start sm`. Starts on login, owns the embedded NATS, the SQLite connection, and the alert fan-out.
 
+## Remote machines
+
+Hooks on other machines can feed the central daemon over Tailscale. The daemon
+stays bound to loopback; `tailscale serve` forwards the port tailnet-only, so
+the bus token never crosses an unencrypted link (NATS sends it cleartext
+inside the TCP stream).
+
+On the workstation running the daemon:
+
+```sh
+tailscale serve --bg --tcp 4222 tcp://localhost:4222
+```
+
+On each remote machine:
+
+1. Install `sm` and wire the agent hooks as usual.
+2. Copy `~/.local/share/sm/bus-token` from the workstation to the same path
+   (keep it `0600`).
+3. Point the hooks at the workstation, e.g. in the hook command:
+   `SM_BUS_URL=nats://<workstation>.tailnet-name.ts.net:4222 sm hook claude`.
+
+Sessions carry the hostname the hook ran on (`host_id`), so the workstation's
+process-liveness reaper leaves remote sessions alone. Remote sessions are
+never reaped automatically yet — a stale one needs `sm mark <id> dead` — and
+`sm focus` cannot raise windows on another machine.
+
 ## Technical details
 
 - Language: Go.

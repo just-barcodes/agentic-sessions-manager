@@ -61,6 +61,7 @@ type Event struct {
 	PID       int            `json:"pid,omitempty"`       // agent process id, captured by the hook
 	PIDStart  uint64         `json:"pid_start,omitempty"` // PID's /proc start time
 	BootID    string         `json:"boot_id,omitempty"`   // boot id when PID was captured
+	HostID    string         `json:"host_id,omitempty"`   // hostname where the hook ran; daemon falls back to its own
 }
 
 // NotifyType is the sub-type of a Notification event, set by the hook from

@@ -111,6 +111,60 @@ func TestHandleAnswerResumesRunning(t *testing.T) {
 	}
 }
 
+// TestRemoteHostSessionSurvivesSweep pins the Phase-3 remote contract: a
+// session created from a hook-stamped foreign HostID keeps that host_id, and
+// the local /proc reaper never probes it — its pid is meaningless on this
+// machine, so without the host scoping it would be reaped dead within a sweep.
+func TestRemoteHostSessionSurvivesSweep(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "sm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+	h := &handler{store: st, hostID: "workstation"}
+
+	// A remote session whose fingerprint would read as provably dead if probed
+	// against the local /proc (bogus boot id), and a local one with the same
+	// dead fingerprint as a control.
+	remote := session.Event{
+		Agent: "claude", NativeID: "r1", Kind: session.EventSessionStart,
+		Timestamp: time.Now(), HostID: "laptop",
+		PID: 4242, PIDStart: 1, BootID: "not-the-current-boot",
+	}
+	local := session.Event{
+		Agent: "claude", NativeID: "l1", Kind: session.EventSessionStart,
+		Timestamp: time.Now(),
+		PID:       4242, PIDStart: 1, BootID: "not-the-current-boot",
+	}
+	h.handle(remote)
+	h.handle(local)
+
+	h.sweep()
+
+	all, err := st.ListSessions(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byNative := map[string]session.Session{}
+	for _, s := range all {
+		byNative[s.NativeID] = s
+	}
+	if got := byNative["r1"]; got.HostID != "laptop" {
+		t.Errorf("remote session host_id = %q, want %q (hook-stamped)", got.HostID, "laptop")
+	}
+	if got := byNative["r1"]; got.Status == session.StateDead {
+		t.Error("remote session was reaped by the local sweep")
+	}
+	if got := byNative["l1"]; got.HostID != "workstation" {
+		t.Errorf("local session host_id = %q, want daemon fallback %q", got.HostID, "workstation")
+	}
+	if got := byNative["l1"]; got.Status != session.StateDead {
+		t.Errorf("local control session status = %q, want dead (sweep should reap it)", got.Status)
+	}
+}
+
 // TestEmbeddedNATSHonorsBusURL verifies the daemon and its clients agree on
 // SM_BUS_URL: the embedded server bound to the host/port parsed from bus.URL()
 // accepts a token-auth client dialing that same URL. The pick-then-bind free
