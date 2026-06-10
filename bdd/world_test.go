@@ -2,7 +2,7 @@
 // binary end to end (hook JSON on stdin → NATS → daemon → SQLite → sm ls),
 // hermetically isolated from the user's live daemon and data. This file is
 // lifecycle only — binary build, per-test dirs/port/env, daemon start/stop;
-// fixtures and assertions live elsewhere.
+// fixtures and step definitions live elsewhere.
 package bdd
 
 import (
@@ -60,9 +60,10 @@ func TestMain(m *testing.M) {
 // world is one test's hermetic environment: its own XDG dirs (so its own
 // database, bus token, and waiting-count file) and its own bus port. Every sm
 // subprocess the test launches shares this env, so the daemon and its clients
-// agree on all paths and the token.
+// agree on all paths and the token. A world is driven from a single goroutine;
+// only the stderr buffer is shared with the subprocess copier.
 type world struct {
-	dataDir  string // per-test XDG_DATA_HOME
+	dataDir  string // per-test XDG_DATA_HOME (and HOME)
 	stateDir string // per-test XDG_STATE_HOME
 	busURL   string
 
@@ -73,14 +74,41 @@ type world struct {
 	stderr bytes.Buffer // daemon stderr, attached to failure messages
 }
 
+// newScenarioWorld is the error-returning constructor godog hooks use; pair
+// it with dispose. Tests use newWorld, which wires cleanup into t.
+func newScenarioWorld() (*world, error) {
+	dataDir, err := os.MkdirTemp("", "sm-bdd-data-*")
+	if err != nil {
+		return nil, err
+	}
+	stateDir, err := os.MkdirTemp("", "sm-bdd-state-*")
+	if err != nil {
+		os.RemoveAll(dataDir)
+		return nil, err
+	}
+	return &world{dataDir: dataDir, stateDir: stateDir}, nil
+}
+
 func newWorld(t *testing.T) *world {
 	t.Helper()
-	w := &world{
-		dataDir:  t.TempDir(),
-		stateDir: t.TempDir(),
+	w, err := newScenarioWorld()
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { w.stopDaemon(t) })
+	t.Cleanup(func() {
+		if err := w.dispose(); err != nil {
+			t.Error(err)
+		}
+	})
 	return w
+}
+
+// dispose stops the daemon and removes the world's directories.
+func (w *world) dispose() error {
+	err := w.stop()
+	os.RemoveAll(w.dataDir)
+	os.RemoveAll(w.stateDir)
+	return err
 }
 
 // env is the environment for every sm subprocess in this world. Overridden
@@ -107,20 +135,30 @@ func (w *world) env() []string {
 	return env
 }
 
-// startDaemon launches `sm daemon` on a fresh free port and blocks until a
+// start launches `sm daemon` on a fresh free port and blocks until a
 // token-auth bus connection succeeds. A daemon that dies before becoming
 // ready (e.g. the picked port was taken meanwhile) is retried on a new port.
-func (w *world) startDaemon(t *testing.T) {
-	t.Helper()
+func (w *world) start() error {
 	var lastErr error
 	for range startRetries {
-		w.busURL = fmt.Sprintf("nats://127.0.0.1:%d", pickFreePort(t))
+		port, err := freePort()
+		if err != nil {
+			return err
+		}
+		w.busURL = fmt.Sprintf("nats://127.0.0.1:%d", port)
 		if lastErr = w.tryStartDaemon(); lastErr == nil {
-			return
+			return nil
 		}
 	}
-	t.Fatalf("daemon not ready after %d attempts: %v\ndaemon stderr:\n%s",
+	return fmt.Errorf("daemon not ready after %d attempts: %w\ndaemon stderr:\n%s",
 		startRetries, lastErr, w.daemonStderr())
+}
+
+func (w *world) startDaemon(t *testing.T) {
+	t.Helper()
+	if err := w.start(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (w *world) tryStartDaemon() error {
@@ -181,19 +219,27 @@ func (w *world) sm(stdin io.Reader, args ...string) (string, error) {
 	return string(out), err
 }
 
-// stopDaemon terminates the daemon gracefully and waits for it to be reaped:
-// SIGTERM, then SIGKILL if it ignores the grace period. Safe to call twice.
-func (w *world) stopDaemon(t *testing.T) {
-	t.Helper()
+// stop terminates the daemon gracefully and waits for it to be reaped:
+// SIGTERM, then SIGKILL if it ignores the grace period (reported as an
+// error). Safe to call twice or on a never-started world.
+func (w *world) stop() error {
 	if w.daemon == nil || !w.daemonRunning() {
-		return
+		return nil
 	}
 	_ = w.daemon.Process.Signal(syscall.SIGTERM)
 	select {
 	case <-w.exited:
+		return nil
 	case <-time.After(stopTimeout):
-		t.Errorf("daemon ignored SIGTERM for %s; killing\ndaemon stderr:\n%s", stopTimeout, w.daemonStderr())
 		w.killDaemon()
+		return fmt.Errorf("daemon ignored SIGTERM for %s; killed\ndaemon stderr:\n%s", stopTimeout, w.daemonStderr())
+	}
+}
+
+func (w *world) stopDaemon(t *testing.T) {
+	t.Helper()
+	if err := w.stop(); err != nil {
+		t.Error(err)
 	}
 }
 
@@ -234,14 +280,13 @@ func (s syncWriter) Write(p []byte) (int, error) {
 	return s.w.stderr.Write(p)
 }
 
-// pickFreePort finds a port that was free a moment ago. The pick-then-bind
-// window is racy by nature; startDaemon absorbs it by retrying.
-func pickFreePort(t *testing.T) int {
-	t.Helper()
+// freePort finds a port that was free a moment ago. The pick-then-bind window
+// is racy by nature; start absorbs it by retrying.
+func freePort() (int, error) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatal(err)
+		return 0, err
 	}
 	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
+	return l.Addr().(*net.TCPAddr).Port, nil
 }
