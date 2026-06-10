@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/cucumber/godog v0.15.1
 	github.com/nats-io/nats-server/v2 v2.14.0
-	github.com/nats-io/nats.go v1.51.0
+	github.com/nats-io/nats.go v1.52.0
 	modernc.org/sqlite v1.32.0
 )
 
