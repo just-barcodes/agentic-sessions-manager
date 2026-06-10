@@ -150,8 +150,11 @@ On each remote machine:
 1. Install `sm` and wire the agent hooks as usual.
 2. Copy `~/.local/share/sm/bus-token` from the workstation to the same path
    (keep it `0600`).
-3. Point the hooks at the workstation, e.g. in the hook command:
-   `SM_BUS_URL=nats://<workstation>.tailnet-name.ts.net:4222 sm hook claude`.
+3. Point the hooks at the workstation's tailnet IP (`tailscale ip -4` there),
+   e.g. in the hook command:
+   `SM_BUS_URL=nats://100.x.y.z:4222 sm hook claude`.
+   Use the IP, not the MagicDNS name: serve's hostname route is
+   TLS-terminated, which plain `nats://` clients don't speak.
 
 Sessions carry the hostname the hook ran on (`host_id`), so the workstation's
 process-liveness reaper leaves remote sessions alone. Remote sessions are
