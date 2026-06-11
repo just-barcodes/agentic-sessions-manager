@@ -340,6 +340,62 @@ func (s *Store) ReapStale(ctx context.Context, hostID string, isDead func(sessio
 	return reaped, nil
 }
 
+// RemoteReapTTL is how long a session on another host may go without events
+// before it is presumed dead. Remote agent processes cannot be probed via
+// /proc, so event recency is the only liveness signal; the TTL is generous
+// because an idle-at-prompt session legitimately emits no events for hours.
+const RemoteReapTTL = 24 * time.Hour
+
+// ReapRemoteStale marks non-terminal sessions on hosts other than localHostID
+// dead when their last event is older than cutoff. The TTL counterpart of
+// ReapStale for sessions the local /proc reaper cannot probe. last_event_at is
+// preserved so the row still reflects when the agent was actually last seen.
+// Returns the reaped sessions (with Status set to dead) so callers can react.
+func (s *Store) ReapRemoteStale(ctx context.Context, localHostID string, cutoff time.Time) ([]session.Session, error) {
+	clause, targs := terminalNotIn("status")
+	qargs := append([]any{localHostID, cutoff.Unix()}, targs...)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, agent, cwd, host_id, last_event_at
+		FROM sessions
+		WHERE host_id != ? AND last_event_at < ? AND `+clause,
+		qargs...)
+	if err != nil {
+		return nil, err
+	}
+	var stale []session.Session
+	for rows.Next() {
+		var sess session.Session
+		var lastEventAt int64
+		if err := rows.Scan(&sess.ID, &sess.Agent, &sess.CWD, &sess.HostID, &lastEventAt); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		sess.LastEventAt = time.Unix(lastEventAt, 0)
+		stale = append(stale, sess)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close() // release before issuing writes on the same connection
+
+	var reaped []session.Session
+	for _, sess := range stale {
+		// Same recency guard as ReapStale: a newer event arriving between the
+		// SELECT and this UPDATE wins, so only report actually-changed rows.
+		n, err := s.UpdateStatus(ctx, sess.ID, session.StateDead, sess.LastEventAt)
+		if err != nil {
+			return reaped, err
+		}
+		if n == 0 {
+			continue
+		}
+		sess.Status = session.StateDead
+		reaped = append(reaped, sess)
+	}
+	return reaped, nil
+}
+
 // terminalNotIn builds a "<col> NOT IN (?, ?)" clause plus the bind args for the
 // terminal states, so the rule for which sessions are hidden/skipped lives in
 // one place and both ListSessions and ReapStale stay in sync.

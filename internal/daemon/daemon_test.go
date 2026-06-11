@@ -115,6 +115,8 @@ func TestHandleAnswerResumesRunning(t *testing.T) {
 // session created from a hook-stamped foreign HostID keeps that host_id, and
 // the local /proc reaper never probes it — its pid is meaningless on this
 // machine, so without the host scoping it would be reaped dead within a sweep.
+// Remote sessions are instead reaped on event-recency TTL: one silent past
+// store.RemoteReapTTL is marked dead by the same sweep.
 func TestRemoteHostSessionSurvivesSweep(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "sm.db"))
 	if err != nil {
@@ -138,8 +140,15 @@ func TestRemoteHostSessionSurvivesSweep(t *testing.T) {
 		Timestamp: time.Now(),
 		PID:       4242, PIDStart: 1, BootID: "not-the-current-boot",
 	}
+	// A remote session whose last event is older than the TTL: no /proc to
+	// probe, so event silence is what marks it dead.
+	remoteStale := session.Event{
+		Agent: "claude", NativeID: "r2", Kind: session.EventSessionStart,
+		Timestamp: time.Now().Add(-store.RemoteReapTTL - time.Hour), HostID: "laptop",
+	}
 	h.handle(remote)
 	h.handle(local)
+	h.handle(remoteStale)
 
 	h.sweep()
 
@@ -162,6 +171,9 @@ func TestRemoteHostSessionSurvivesSweep(t *testing.T) {
 	}
 	if got := byNative["l1"]; got.Status != session.StateDead {
 		t.Errorf("local control session status = %q, want dead (sweep should reap it)", got.Status)
+	}
+	if got := byNative["r2"]; got.Status != session.StateDead {
+		t.Errorf("TTL-stale remote session status = %q, want dead", got.Status)
 	}
 }
 

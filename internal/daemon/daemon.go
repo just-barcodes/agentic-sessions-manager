@@ -192,6 +192,13 @@ func (h *handler) sweep() {
 		log.Printf("daemon: reap stale: %v", err)
 		return
 	}
+	// Remote sessions can't be probed via /proc; reap them on event-recency TTL
+	// instead. A failure here must not block fanning out the local reaps.
+	remote, err := h.store.ReapRemoteStale(ctx, h.hostID, time.Now().Add(-store.RemoteReapTTL))
+	if err != nil {
+		log.Printf("daemon: reap remote stale: %v", err)
+	}
+	reaped = append(reaped, remote...)
 	for _, sess := range reaped {
 		for _, sink := range h.sinks {
 			if err := sink.OnStateChange(sess.ID, sess.Status); err != nil {

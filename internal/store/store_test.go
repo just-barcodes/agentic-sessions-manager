@@ -282,6 +282,78 @@ func TestReapStale(t *testing.T) {
 	}
 }
 
+func TestReapRemoteStale(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "sm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+	now := time.Now()
+	old := now.Add(-2 * time.Hour)
+	mk := func(id, host string, status session.State, last time.Time) {
+		if err := st.CreateSession(ctx, session.Session{
+			ID: id, Agent: "claude", CWD: "/tmp", HostID: host,
+			StartedAt: last, LastEventAt: last, Status: status,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("remote-old", "laptop", session.StateWaiting, old)   // must be reaped
+	mk("remote-fresh", "laptop", session.StateRunning, now) // recent events: kept
+	mk("local-old", "h", session.StateRunning, old)         // local host: ReapStale's job, not TTL's
+	mk("remote-done", "laptop", session.StateFinished, old) // terminal: must be skipped
+	mk("remote-idle-old", "laptop", session.StateIdle, old) // idle counts too: no liveness signal
+	mk("remote-reaped", "laptop", session.StateDead, old)   // already dead: must be skipped
+
+	cutoff := now.Add(-time.Hour)
+	reaped, err := st.ReapRemoteStale(ctx, "h", cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reapedIDs := map[string]bool{}
+	for _, s := range reaped {
+		reapedIDs[s.ID] = true
+		if s.Status != session.StateDead {
+			t.Errorf("reaped session %q status = %q, want %q", s.ID, s.Status, session.StateDead)
+		}
+	}
+	if len(reaped) != 2 || !reapedIDs["remote-old"] || !reapedIDs["remote-idle-old"] {
+		t.Fatalf("want [remote-old remote-idle-old] reaped, got %+v", reaped)
+	}
+
+	all, err := st.ListSessions(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]session.State{}
+	for _, s := range all {
+		got[s.ID] = s.Status
+	}
+	if got["remote-old"] != session.StateDead {
+		t.Errorf("remote-old: want %q, got %q", session.StateDead, got["remote-old"])
+	}
+	if got["remote-fresh"] != session.StateRunning {
+		t.Errorf("remote session with recent events wrongly reaped to %q", got["remote-fresh"])
+	}
+	if got["local-old"] != session.StateRunning {
+		t.Errorf("local session must not be TTL-reaped, got %q", got["local-old"])
+	}
+	if got["remote-done"] != session.StateFinished {
+		t.Errorf("terminal remote session changed to %q", got["remote-done"])
+	}
+
+	// last_event_at is preserved: the row still says when the agent was last seen.
+	sess, _, err := st.GetSession(ctx, "remote-old", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.LastEventAt.Unix() != old.Unix() {
+		t.Errorf("last_event_at = %v, want preserved %v", sess.LastEventAt.Unix(), old.Unix())
+	}
+}
+
 func TestGetSession(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "sm.db"))
 	if err != nil {

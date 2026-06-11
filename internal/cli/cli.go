@@ -19,14 +19,15 @@ import (
 )
 
 // reapStale marks sessions whose agent process has died (no clean stop ever
-// arrived) on this host. Best-effort: errors are swallowed so a reaping failure
-// never blocks listing.
+// arrived) on this host, and remote sessions silent past the TTL. Best-effort:
+// errors are swallowed so a reaping failure never blocks listing.
 func reapStale(ctx context.Context, st *store.Store) {
 	host, err := os.Hostname()
 	if err != nil {
 		return
 	}
 	_, _ = st.ReapStale(ctx, host, liveness.IsProcessDead)
+	_, _ = st.ReapRemoteStale(ctx, host, time.Now().Add(-store.RemoteReapTTL))
 }
 
 func List(args []string) error {
@@ -172,6 +173,9 @@ func Focus(args []string) error {
 	sess, _, err := st.GetSession(context.Background(), args[0], 0)
 	if err != nil {
 		return err
+	}
+	if host, err := os.Hostname(); err == nil && sess.HostID != "" && sess.HostID != host {
+		return fmt.Errorf("session %s lives on host %q; focus can only raise local windows", short(sess.ID), sess.HostID)
 	}
 	return focus.Focus(focus.RealSystem(), liveness.Identity{
 		PID:    sess.PID,

@@ -157,9 +157,12 @@ On each remote machine:
    TLS-terminated, which plain `nats://` clients don't speak.
 
 Sessions carry the hostname the hook ran on (`host_id`), so the workstation's
-process-liveness reaper leaves remote sessions alone. Remote sessions are
-never reaped automatically yet — a stale one needs `sm mark <id> dead` — and
-`sm focus` cannot raise windows on another machine.
+process-liveness reaper leaves remote sessions alone. Their processes can't be
+probed across machines, so remote sessions are instead reaped on event
+recency: silent for 24h → `dead`. The TTL is generous because an idle session
+legitimately emits no events; a remote session you know is gone can be cleaned
+up sooner with `sm mark <id> dead`. `sm focus` on a remote session prints
+which host it lives on rather than trying to raise a window.
 
 ## Technical details
 
