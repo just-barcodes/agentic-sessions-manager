@@ -107,21 +107,44 @@ func EnsureToken(path string) (string, error) {
 	if err != nil || tok != "" {
 		return tok, err
 	}
-	var b [32]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	tok, err = GenerateToken()
+	if err != nil {
 		return "", err
 	}
-	tok = hex.EncodeToString(b[:])
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(path, []byte(tok+"\n"), 0o600); err != nil {
+	if err := WriteToken(path, tok); err != nil {
 		return "", err
 	}
 	return tok, nil
 }
 
+// GenerateToken returns a fresh random bus token without persisting it, so a
+// caller can hold the value while it finishes coming up and write the file only
+// once it is ready to serve (see WriteToken).
+func GenerateToken() (string, error) {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+// WriteToken persists token to path with owner-only permissions, creating the
+// parent directory. The daemon writes the token file last, as its readiness
+// signal: a client that can read a valid token can also reach a subscribed bus.
+func WriteToken(path, token string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(token+"\n"), 0o600)
+}
+
 func (b *Bus) Close() { b.conn.Close() }
+
+// Flush round-trips to the server, so once it returns any subscription interest
+// or published message the connection has issued has been processed server-side.
+// The daemon flushes after subscribing so the server routes events before it
+// advertises readiness.
+func (b *Bus) Flush() error { return b.conn.Flush() }
 
 // Subscribe invokes handler for every event on sm.session.*.event. The
 // subscription stays active until the bus is drained (see Drain) or closed.

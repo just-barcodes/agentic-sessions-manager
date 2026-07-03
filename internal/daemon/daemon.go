@@ -50,9 +50,20 @@ func Run(_ []string) error {
 	}
 	defer st.Close()
 
-	token, err := bus.EnsureToken(store.BusTokenPath())
+	// Load the token but defer writing it: the token file is the daemon's
+	// readiness signal, and it must not appear until the bus subscription is
+	// live (see below). On a fresh start there is no file yet, so hold a
+	// generated token in memory and write it after subscribing.
+	tokenPath := store.BusTokenPath()
+	token, err := bus.LoadToken(tokenPath)
 	if err != nil {
 		return err
+	}
+	freshToken := token == ""
+	if freshToken {
+		if token, err = bus.GenerateToken(); err != nil {
+			return err
+		}
 	}
 
 	host, port, err := bus.HostPort(bus.URL())
@@ -97,6 +108,20 @@ func Run(_ []string) error {
 	if err := b.Subscribe(func(e session.Event) { h.handle(e) }); err != nil {
 		return err
 	}
+	// Register the subscription interest with the server before advertising
+	// readiness. Core NATS drops a message published to a subject with no
+	// interest, so a hook that fired the instant the token file appeared would
+	// otherwise lose its event. Flush guarantees the SUB is processed; only then
+	// is the token file written, making "token readable" imply "bus subscribed".
+	if err := b.Flush(); err != nil {
+		return err
+	}
+	if freshToken {
+		if err := bus.WriteToken(tokenPath, token); err != nil {
+			return err
+		}
+	}
+
 	var wg sync.WaitGroup
 	wg.Go(func() { h.sweepLoop(ctx) })
 
