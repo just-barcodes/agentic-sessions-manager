@@ -1,6 +1,9 @@
 package hook
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -164,4 +167,100 @@ func TestOpencodeKindMapping(t *testing.T) {
 			t.Errorf("opencodeKind(%q) = (%q, %v), want (%q, %v)", typ, got, ok, want.want, want.ok)
 		}
 	}
+}
+
+// TestParseClaudeTitleFromHookField covers the cheap path: Claude puts its
+// session title straight on UserPromptSubmit and SessionStart.
+func TestParseClaudeTitleFromHookField(t *testing.T) {
+	in := `{"session_id":"abc","hook_event_name":"UserPromptSubmit","prompt":"hi","session_title":"Fix the reaper"}`
+	e, ok, err := parseClaude(strings.NewReader(in), fixedNow)
+	if err != nil || !ok {
+		t.Fatalf("parseClaude: ok=%v err=%v", ok, err)
+	}
+	if e.Payload["title"] != "Fix the reaper" {
+		t.Errorf("title payload = %v, want %q", e.Payload["title"], "Fix the reaper")
+	}
+}
+
+// TestParseClaudeTitleFromTranscript covers the path that matters for a session
+// waiting on its user: Stop carries no session_title, so the title has to come
+// from the transcript, and the newest record wins.
+func TestParseClaudeTitleFromTranscript(t *testing.T) {
+	path := writeTranscript(t,
+		`{"type":"user","sessionId":"abc"}`,
+		`{"type":"ai-title","aiTitle":"First guess","sessionId":"abc"}`,
+		`{"type":"assistant","sessionId":"abc"}`,
+		`{"type":"ai-title","aiTitle":"Settled title","sessionId":"abc"}`,
+	)
+	in := fmt.Sprintf(`{"session_id":"abc","hook_event_name":"Stop","transcript_path":%q}`, path)
+	e, ok, err := parseClaude(strings.NewReader(in), fixedNow)
+	if err != nil || !ok {
+		t.Fatalf("parseClaude: ok=%v err=%v", ok, err)
+	}
+	if e.Payload["title"] != "Settled title" {
+		t.Errorf("title payload = %v, want %q", e.Payload["title"], "Settled title")
+	}
+}
+
+// TestParseClaudeToolUseSkipsTranscript locks the hot path: PreToolUse fires
+// constantly and blocks the agent, so it must never read the transcript.
+func TestParseClaudeToolUseSkipsTranscript(t *testing.T) {
+	path := writeTranscript(t, `{"type":"ai-title","aiTitle":"Settled title","sessionId":"abc"}`)
+	in := fmt.Sprintf(`{"session_id":"abc","hook_event_name":"PreToolUse","transcript_path":%q}`, path)
+	e, ok, err := parseClaude(strings.NewReader(in), fixedNow)
+	if err != nil || !ok {
+		t.Fatalf("parseClaude: ok=%v err=%v", ok, err)
+	}
+	if _, has := e.Payload["title"]; has {
+		t.Errorf("PreToolUse read the transcript: title = %v", e.Payload["title"])
+	}
+}
+
+// TestTitleFromTranscriptEdges: a title older than the scanned tail is not
+// reported (the stored one stands), and nothing about a missing or unusable
+// transcript is an error — a hook must never fail over a title.
+func TestTitleFromTranscriptEdges(t *testing.T) {
+	filler := `{"type":"assistant","text":"` + strings.Repeat("x", 4096) + `"}`
+	lines := []string{`{"type":"ai-title","aiTitle":"Buried title","sessionId":"abc"}`}
+	for len(lines) < 2+titleTailBytes/len(filler) {
+		lines = append(lines, filler)
+	}
+	if got := titleFromTranscript(writeTranscript(t, lines...)); got != "" {
+		t.Errorf("title outside the scanned tail: got %q, want empty", got)
+	}
+	if got := titleFromTranscript(filepath.Join(t.TempDir(), "missing.jsonl")); got != "" {
+		t.Errorf("missing transcript: got %q, want empty", got)
+	}
+	if got := titleFromTranscript(""); got != "" {
+		t.Errorf("no transcript path: got %q, want empty", got)
+	}
+}
+
+// TestParseOpencodeTitle checks the opencode side: a session.title event carries
+// the name and, being a kind the state machine ignores, moves no session.
+func TestParseOpencodeTitle(t *testing.T) {
+	in := `{"type":"session.title","properties":{"sessionID":"oc-1","info":{"title":"Reset DB"}}}`
+	e, ok, err := parseOpencode(strings.NewReader(in), fixedNow)
+	if err != nil || !ok {
+		t.Fatalf("parseOpencode: ok=%v err=%v", ok, err)
+	}
+	if e.Kind != session.EventTitle {
+		t.Errorf("kind = %q, want %q", e.Kind, session.EventTitle)
+	}
+	if e.Payload["title"] != "Reset DB" {
+		t.Errorf("title payload = %v, want %q", e.Payload["title"], "Reset DB")
+	}
+	if got := session.Transition(session.StateWaiting, e); got != "" {
+		t.Errorf("learning a title moved a waiting session to %q", got)
+	}
+}
+
+// writeTranscript writes lines as a JSONL transcript and returns its path.
+func writeTranscript(t *testing.T, lines ...string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

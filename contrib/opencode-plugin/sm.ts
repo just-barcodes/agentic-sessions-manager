@@ -25,7 +25,7 @@ const send = async (payload: unknown) => {
 }
 
 export const SmTracker: Plugin = async () => {
-  const announced = new Set<string>()
+  const announced = new Map<string, string>()
   return {
     event: async ({ event }) => {
       const props = (event as any)?.properties
@@ -33,9 +33,16 @@ export const SmTracker: Plugin = async () => {
       if (typeof sid !== "string" || !sid) return
 
       if (event.type === "session.created" || event.type === "session.updated") {
-        if (announced.has(sid)) return
-        announced.add(sid)
-        await send({ type: "session.updated", properties: props })
+        // opencode fires session.updated repeatedly, so forward only the first
+        // (which announces the session) and any later one whose title changed —
+        // it names a session after its first message, well after the start.
+        // Those go out as session.title so sm records the name without
+        // replaying a session start, which would reset a live turn to idle.
+        const title: string = typeof props?.info?.title === "string" ? props.info.title : ""
+        const seen = announced.has(sid)
+        if (seen && announced.get(sid) === title) return
+        announced.set(sid, title)
+        await send({ type: seen ? "session.title" : "session.updated", properties: props })
         return
       }
       if (FORWARD.has(event.type)) {

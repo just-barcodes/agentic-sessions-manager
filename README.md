@@ -83,17 +83,32 @@ SQLite, single file at `~/.local/share/sm/sm.db`.
 ```sql
 sessions(id TEXT PK, agent TEXT, native_id TEXT, cwd TEXT, host_id TEXT,
          started_at INTEGER, last_event_at INTEGER, status TEXT,
-         pid INTEGER, pid_start INTEGER, boot_id TEXT, last_prompt TEXT)
+         pid INTEGER, pid_start INTEGER, boot_id TEXT, last_prompt TEXT,
+         title TEXT)
 events  (id INTEGER PK, session_id TEXT, ts INTEGER, kind TEXT, payload JSON)
 -- UNIQUE(agent, native_id) where native_id != ''  → enforces 1:1 handoff
 -- (pid, pid_start, boot_id) is the agent process fingerprint used for liveness
 -- last_prompt caches the latest user_prompt text so `sm ls` needn't scan events
+-- title caches the agent's own name for the session (see Session titles)
 ```
 
-- `pid` / `pid_start` / `boot_id` / `last_prompt` are added by additive migrations on open, so existing databases keep working. When `last_prompt` is first added it is backfilled from existing events, so pre-upgrade sessions keep their prompts.
+- `pid` / `pid_start` / `boot_id` / `last_prompt` / `title` are added by additive migrations on open, so existing databases keep working. When `last_prompt` is first added it is backfilled from existing events, so pre-upgrade sessions keep their prompts. `title` needs no backfill: the payload key it caches ships in the same release as the column.
 
 - `host_id` is included from day one so cross-device data can coexist later without a migration.
 - History starts as events-only (state transitions, token counts when the hook supplies them). Schema extends cleanly to full transcripts later by adding a `transcripts` table or expanding the `events.payload` blob.
+
+### Session titles
+
+Agents name their own sessions — Claude generates a title a turn or so in, opencode titles a session after its first message — and that name is a far better handle than a path, so it is the last column of `sm ls` (falling back to the cwd while a session is still unnamed).
+
+Claude delivers it two ways, and `sm` uses both:
+
+- `session_title` in the hook payload, which Claude sends on `SessionStart` and `UserPromptSubmit` only. Free, but it lags: a title generated during a turn is not in a payload until the *next* prompt, so a session that asks one question and then waits would never report one.
+- the `{"type":"ai-title","aiTitle":…}` record in the session transcript, which appears as soon as the title exists. On `Stop`, `SessionEnd` and `Notification` — the events that leave a session sitting in the list — the hook reads the tail of `transcript_path` and takes the newest record. `PreToolUse` deliberately skips this: it is the high-frequency hook and it blocks the agent.
+
+opencode reports the title on `session.updated`. The plugin in `contrib/opencode-plugin/` forwards the first one (which announces the session) and then only those whose title changed, as a synthetic `session.title` event — replaying a real `session.updated` would look like a session start and knock a live turn back to `idle`. Its event kind, `title`, is the one kind the state machine ignores by design.
+
+Titles are read-only metadata: last non-empty value wins, and an event without one never clears the stored title.
 
 ### Alerts
 
@@ -106,7 +121,7 @@ On every state change the daemon updates the status surfaces:
 ## CLI
 
 ```
-sm ls                 # list all known sessions, one line each
+sm ls                 # list all known sessions, one line each (titled, see below)
 sm show <id>          # details + recent events for one session
 sm mark <id> idle     # manual state override
 sm status             # machine-readable (JSON) summary for walker / scripts

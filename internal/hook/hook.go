@@ -6,6 +6,8 @@
 package hook
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -71,6 +73,8 @@ type claudeInput struct {
 	Prompt           string `json:"prompt"`            // UserPromptSubmit: the submitted prompt text
 	Message          string `json:"message"`           // Notification: the human-readable message
 	NotificationType string `json:"notification_type"` // Notification: permission_prompt|idle_prompt|elicitation_*|auth_success
+	SessionTitle     string `json:"session_title"`     // SessionStart/UserPromptSubmit only: Claude's AI-generated session title
+	TranscriptPath   string `json:"transcript_path"`   // path to the session's JSONL transcript
 }
 
 func runClaude(r io.Reader) error {
@@ -119,8 +123,86 @@ func parseClaude(r io.Reader, now func() time.Time) (session.Event, bool, error)
 	if in.Message != "" {
 		e.Payload["message"] = in.Message
 	}
+	if title := claudeTitle(in, kind); title != "" {
+		e.Payload["title"] = title
+	}
 	e.Notify = claudeNotify(in.NotificationType, in.Message)
 	return e, true, nil
+}
+
+// titleTailBytes is how much of a transcript's tail claudeTitle scans for the
+// newest ai-title record. Claude rewrites the record every few turns, so the
+// last one sits near the end — in a 10 MB transcript, within the final 32 KB.
+// A title that falls outside the window simply isn't reported, and the one
+// already stored stands.
+const titleTailBytes = 64 << 10
+
+// claudeTitle resolves the session's title. Claude puts session_title on
+// SessionStart and UserPromptSubmit only, and even there it lags: the title
+// generated during a turn isn't visible until the *next* prompt, so a session
+// that gets one prompt and then sits idle would never report one. For the events
+// that end a turn or block on the user — exactly the sessions `sm ls` exists to
+// surface — fall back to the transcript, where Claude writes the title as soon
+// as it exists. PreToolUse is deliberately excluded: it is the high-frequency
+// hook and it blocks the agent, so it must not pay for a file read.
+func claudeTitle(in claudeInput, kind session.EventKind) string {
+	if in.SessionTitle != "" {
+		return in.SessionTitle
+	}
+	switch kind {
+	case session.EventStop, session.EventSessionEnd, session.EventNotification:
+		return titleFromTranscript(in.TranscriptPath)
+	}
+	return ""
+}
+
+// titleFromTranscript returns the newest title recorded in the transcript at
+// path, or "" if the scanned tail holds none. Every failure is silent: a missing
+// title must never break a hook.
+//
+// Claude records the title as its own transcript line,
+// {"type":"ai-title","aiTitle":"…","sessionId":"…"}, rewritten as the session
+// grows. The read starts mid-file, so the first line is usually a fragment; it
+// just fails to parse as a record and is skipped.
+func titleFromTranscript(path string) string {
+	if path == "" {
+		return ""
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	if off := fi.Size() - titleTailBytes; off > 0 {
+		if _, err := f.Seek(off, io.SeekStart); err != nil {
+			return ""
+		}
+	}
+	// Transcript lines (tool results, pasted files) can be far longer than the
+	// scanner's default limit, and hitting it would stop the scan early and lose
+	// a later title. Nothing in the window can exceed the window itself.
+	sc := bufio.NewScanner(f)
+	sc.Buffer(nil, titleTailBytes+1)
+	var title string
+	for sc.Scan() {
+		line := sc.Bytes()
+		if !bytes.Contains(line, []byte(`"ai-title"`)) {
+			continue
+		}
+		var rec struct {
+			Type    string `json:"type"`
+			AITitle string `json:"aiTitle"`
+		}
+		if err := json.Unmarshal(line, &rec); err != nil || rec.Type != "ai-title" {
+			continue
+		}
+		title = rec.AITitle
+	}
+	return title
 }
 
 // claudeNotify resolves a Notification's sub-type. Newer Claude versions populate
@@ -184,6 +266,7 @@ type opencodeInput struct {
 		SessionID string `json:"sessionID"`
 		Info      *struct {
 			Directory string `json:"directory"`
+			Title     string `json:"title"`
 		} `json:"info,omitempty"`
 	} `json:"properties"`
 }
@@ -218,8 +301,17 @@ func parseOpencode(r io.Reader, now func() time.Time) (session.Event, bool, erro
 		Kind:      kind,
 		Timestamp: now(),
 	}
-	if in.Properties.Info != nil && in.Properties.Info.Directory != "" {
-		e.Payload = map[string]any{"cwd": in.Properties.Info.Directory}
+	payload := map[string]any{}
+	if info := in.Properties.Info; info != nil {
+		if info.Directory != "" {
+			payload["cwd"] = info.Directory
+		}
+		if info.Title != "" {
+			payload["title"] = info.Title
+		}
+	}
+	if len(payload) > 0 {
+		e.Payload = payload
 	}
 	return e, true, nil
 }
@@ -231,6 +323,12 @@ func opencodeKind(typeStr string) (session.EventKind, bool) {
 	switch typeStr {
 	case "session.created", "session.updated":
 		return session.EventSessionStart, true
+	// Synthesised by the sm plugin when a session's title changes after the
+	// start it already announced. opencode reports that as another
+	// session.updated, which would replay as a session start and knock a
+	// running turn back to idle; title carries the name and no state.
+	case "session.title":
+		return session.EventTitle, true
 	case "permission.asked":
 		return session.EventNotification, true
 	case "session.idle":

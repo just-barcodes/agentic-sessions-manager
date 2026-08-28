@@ -64,6 +64,12 @@ func initializeScenario(sc *godog.ScenarioContext) {
 	sc.Step(`^a claude session with native id "([^"]*)" starts again after a /clear$`, s.claudeSessionClears)
 	sc.Step(`^a claude session with native id "([^"]*)" restarts due to context compaction$`, s.claudeSessionCompacts)
 	sc.Step(`^an opencode session with native id "([^"]*)" starts in "([^"]*)"$`, s.opencodeSessionStarts)
+	sc.Given(`^an opencode session with native id "([^"]*)" is waiting for permission in "([^"]*)"$`, s.opencodeSessionWaiting)
+	sc.Step(`^the claude session "([^"]*)" submits a prompt titled "([^"]*)"$`, s.claudeSessionPromptsTitled)
+	sc.Step(`^the claude session "([^"]*)" submits a prompt with no title$`, s.claudeSessionPromptsUntitled)
+	sc.Step(`^the claude session "([^"]*)" finishes a turn titled "([^"]*)" in its transcript$`, s.claudeSessionTurnTitled)
+	sc.Step(`^opencode names session "([^"]*)" "([^"]*)"$`, s.opencodeNamesSession)
+	sc.Step(`^the session list shows the title "([^"]*)"$`, s.sessionListShowsTitle)
 	sc.Step(`^an agent sends a start notification that is not valid JSON$`, s.agentSendsInvalidJSON)
 	sc.Step(`^the hook exits successfully$`, s.hookExitedSuccessfully)
 	sc.Step(`^the session list contains exactly (\d+) sessions?$`, s.sessionListContainsExactly)
@@ -146,6 +152,64 @@ func (s *scenario) opencodeSessionStarts(nativeID, project string) error {
 	return s.runHook("opencode", opencodeSessionStartJSON(nativeID, dir))
 }
 
+// claudeSessionPromptsTitled fires the hook that carries Claude's own title for
+// the session in its payload.
+func (s *scenario) claudeSessionPromptsTitled(nativeID, title string) error {
+	return s.runHook("claude", claudeUserPromptJSON(nativeID, "do the thing", title))
+}
+
+// claudeSessionPromptsUntitled is the same hook with an empty session_title —
+// what Claude sends before it has named the session, and again on any version
+// that doesn't send the field at all.
+func (s *scenario) claudeSessionPromptsUntitled(nativeID string) error {
+	return s.claudeSessionPromptsTitled(nativeID, "")
+}
+
+// claudeSessionTurnTitled writes the transcript Claude would have written by the
+// end of a turn, then fires the Stop hook pointing at it. Stop carries no title
+// of its own, so this is the path sm must follow to see a title that appeared
+// mid-turn — the case that matters, since a session waiting for its user has no
+// next prompt to carry the title.
+func (s *scenario) claudeSessionTurnTitled(nativeID, title string) error {
+	path := filepath.Join(s.w.dataDir, nativeID+".jsonl")
+	if err := os.WriteFile(path, []byte(claudeTranscriptJSONL(nativeID, title)), 0o600); err != nil {
+		return err
+	}
+	return s.runHook("claude", claudeStopJSON(nativeID, path))
+}
+
+// opencodeSessionWaiting is the Given form: a started session blocked on a
+// permission request, so a later title can be shown not to move it.
+func (s *scenario) opencodeSessionWaiting(nativeID, project string) error {
+	if err := s.opencodeSessionStarts(nativeID, project); err != nil {
+		return err
+	}
+	if err := s.runHook("opencode", opencodePermissionJSON(nativeID)); err != nil {
+		return err
+	}
+	return s.thatSessionStateIs("waiting")
+}
+
+func (s *scenario) opencodeNamesSession(nativeID, title string) error {
+	return s.runHook("opencode", opencodeTitleJSON(nativeID, title))
+}
+
+func (s *scenario) sessionListShowsTitle(title string) error {
+	return s.eventually(func() error {
+		rows, err := s.listSessions()
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if row.title == title {
+				s.rows = []lsRow{row} // "that session" for any follow-on step
+				return nil
+			}
+		}
+		return fmt.Errorf("no session titled %q among %+v", title, rows)
+	})
+}
+
 // agentSendsInvalidJSON records the hook outcome without judging it; the
 // scenario's Then steps assert the contract (exit 0, no session).
 func (s *scenario) agentSendsInvalidJSON() error {
@@ -184,9 +248,11 @@ func (s *scenario) thatSessionIs(agent, project string) error {
 	if err != nil {
 		return err
 	}
-	if row.agent != agent || row.cwd != s.projects[project] {
+	// An unnamed session lists its cwd, which is how the row still identifies
+	// the project it belongs to.
+	if row.agent != agent || row.title != s.projects[project] {
 		return fmt.Errorf("session is agent %q in %q, want %q in %q (%s)",
-			row.agent, row.cwd, agent, s.projects[project], project)
+			row.agent, row.title, agent, s.projects[project], project)
 	}
 	return nil
 }
@@ -218,7 +284,7 @@ func (s *scenario) listContainsSession(agent, project, state string) error {
 			return err
 		}
 		for _, row := range rows {
-			if row.agent == agent && row.cwd == s.projects[project] && row.status == state {
+			if row.agent == agent && row.title == s.projects[project] && row.status == state {
 				return nil
 			}
 		}
@@ -317,10 +383,11 @@ func eventually(check func() error) error {
 	}
 }
 
-// lsRow is one data row of `sm ls`: ID AGENT STATUS STARTED LAST CWD, where
-// STARTED and LAST are "date time" pairs.
+// lsRow is one data row of `sm ls`: ID AGENT STATUS STARTED LAST TITLE, where
+// STARTED and LAST are "date time" pairs. The last column holds the session's
+// title, or its cwd while the agent has not named it yet.
 type lsRow struct {
-	id, agent, status, cwd string
+	id, agent, status, title string
 }
 
 func (s *scenario) listSessions() ([]lsRow, error) {
@@ -332,9 +399,9 @@ func (s *scenario) listSessions() ([]lsRow, error) {
 }
 
 // parseLS splits `sm ls` output into rows by whitespace. Field indices
-// follow the header (ID AGENT STATUS STARTED LAST CWD): STARTED and LAST
-// are "date time" pairs, putting CWD at field 7. CWDs in this suite come
-// from os.MkdirTemp, so they never contain spaces.
+// follow the header (ID AGENT STATUS STARTED LAST TITLE): STARTED and LAST
+// are "date time" pairs, so the title starts at field 7 and runs to the end
+// of the line — titles are prose and contain spaces.
 func parseLS(out string) ([]lsRow, error) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	var rows []lsRow
@@ -343,7 +410,9 @@ func parseLS(out string) ([]lsRow, error) {
 		if len(f) < 8 {
 			return nil, fmt.Errorf("unparsable sm ls row %q in:\n%s", line, out)
 		}
-		rows = append(rows, lsRow{id: f[0], agent: f[1], status: f[2], cwd: f[7]})
+		rows = append(rows, lsRow{
+			id: f[0], agent: f[1], status: f[2], title: strings.Join(f[7:], " "),
+		})
 	}
 	return rows, nil
 }

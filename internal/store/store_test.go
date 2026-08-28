@@ -568,3 +568,63 @@ func TestMigrateBackfillsLastPrompt(t *testing.T) {
 		t.Errorf("session with no prompts: LastPrompt = %q, want empty", got["none"])
 	}
 }
+
+// TestAppendEventTitle covers the title cache: it is taken from whichever event
+// carries it, an event without one leaves the stored title alone (Claude sends
+// an empty session_title until it has named the session), and a rename wins.
+func TestAppendEventTitle(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "sm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+	now := time.Now()
+	if err := st.CreateSession(ctx, session.Session{
+		ID: "s", Agent: "claude", CWD: "/tmp", HostID: "h",
+		StartedAt: now, LastEventAt: now, Status: session.StateIdle,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ev := func(kind session.EventKind, ts time.Time, payload map[string]any) {
+		if err := st.AppendEvent(ctx, session.Event{
+			SessionID: "s", Kind: kind, Timestamp: ts, Payload: payload,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	title := func() string {
+		sess, _, err := st.GetSession(ctx, "s", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sess.Title
+	}
+
+	ev(session.EventUserPrompt, now, map[string]any{"prompt": "hi"})
+	if got := title(); got != "" {
+		t.Errorf("untitled session: Title = %q, want empty", got)
+	}
+	ev(session.EventStop, now.Add(time.Minute), map[string]any{"title": "First idea"})
+	if got := title(); got != "First idea" {
+		t.Errorf("Title = %q, want %q", got, "First idea")
+	}
+	ev(session.EventUserPrompt, now.Add(2*time.Minute), map[string]any{"prompt": "more"})
+	if got := title(); got != "First idea" {
+		t.Errorf("event without a title changed Title to %q", got)
+	}
+	ev(session.EventUserPrompt, now.Add(3*time.Minute), map[string]any{"title": "Second idea"})
+	if got := title(); got != "Second idea" {
+		t.Errorf("rename: Title = %q, want %q", got, "Second idea")
+	}
+
+	all, err := st.ListSessions(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].Title != "Second idea" {
+		t.Errorf("ListSessions did not carry the title: %+v", all)
+	}
+}

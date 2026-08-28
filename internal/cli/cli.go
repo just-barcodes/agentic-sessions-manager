@@ -53,13 +53,24 @@ func List(args []string) error {
 	}
 	const layout = "2006-01-02 15:04"
 	fmt.Printf("%-8s  %-10s  %-9s  %-16s  %-16s  %s\n",
-		"ID", "AGENT", "STATUS", "STARTED", "LAST", "CWD")
+		"ID", "AGENT", "STATUS", "STARTED", "LAST", "TITLE")
 	for _, s := range sessions {
 		fmt.Printf("%-8s  %-10s  %-9s  %-16s  %-16s  %s\n",
 			short(s.ID), s.Agent, s.Status,
-			s.StartedAt.Format(layout), s.LastEventAt.Format(layout), s.CWD)
+			s.StartedAt.Format(layout), s.LastEventAt.Format(layout), label(s))
 	}
 	return nil
+}
+
+// label is what the last `sm ls` column shows: the agent's own title for the
+// session, falling back to its cwd until the agent has named it (and for agents
+// that never do). Both answer "which session is this?", and a session is only
+// untitled for its first turn or so.
+func label(s session.Session) string {
+	if s.Title != "" {
+		return s.Title
+	}
+	return s.CWD
 }
 
 func Show(args []string) error {
@@ -81,6 +92,9 @@ func Show(args []string) error {
 	fmt.Printf("Agent:      %s\n", sess.Agent)
 	if sess.NativeID != "" {
 		fmt.Printf("Native ID:  %s\n", sess.NativeID)
+	}
+	if sess.Title != "" {
+		fmt.Printf("Title:      %s\n", sess.Title)
 	}
 	fmt.Printf("CWD:        %s\n", sess.CWD)
 	fmt.Printf("Status:     %s\n", sess.Status)

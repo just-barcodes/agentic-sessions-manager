@@ -31,6 +31,11 @@ type Session struct {
 	PIDStart    uint64 // PID's /proc start time, used to detect pid reuse.
 	BootID      string // boot id when PID was captured.
 
+	// Title is the agent's own name for the session — Claude's AI-generated
+	// session title, opencode's session title. Empty until the agent names the
+	// session, which happens a turn or so in.
+	Title string `json:",omitempty"`
+
 	// LastPrompt is the text of the most recent user prompt, derived from
 	// events rather than stored on the row. Only ListSessions populates it;
 	// other lookups leave it empty.
@@ -47,7 +52,8 @@ const (
 	EventStop         EventKind = "stop"         // end of a response turn
 	EventSessionEnd   EventKind = "session_end"  // session terminated (clean exit)
 	EventFail         EventKind = "fail"
-	EventNote         EventKind = "note" // free-form progress event
+	EventNote         EventKind = "note"  // free-form progress event
+	EventTitle        EventKind = "title" // the agent named (or renamed) the session
 )
 
 type Event struct {
@@ -89,6 +95,10 @@ const (
 // an event of the given kind. The empty string means "no state change".
 // Notifications are not handled here because their meaning depends on the
 // Notify sub-type — see Transition.
+//
+// title is deliberately absent: it carries metadata (the agent named the
+// session) and falls through to "", so learning a title never disturbs an
+// in-flight turn.
 //
 // session_start maps to idle, not running: a session that has just started,
 // resumed, cleared (/clear), or compacted is sitting at the prompt waiting for

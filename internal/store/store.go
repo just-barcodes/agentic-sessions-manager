@@ -132,6 +132,9 @@ func migrate(db *sql.DB) error {
 		`ALTER TABLE sessions ADD COLUMN pid INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE sessions ADD COLUMN pid_start INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE sessions ADD COLUMN boot_id TEXT NOT NULL DEFAULT ''`,
+		// title needs no backfill: the payload key it caches is emitted by the
+		// same release that adds the column, so no earlier event can carry one.
+		`ALTER TABLE sessions ADD COLUMN title TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, q := range alters {
 		if _, err := db.ExecContext(context.Background(), q); err != nil &&
@@ -239,6 +242,16 @@ func (s *Store) AppendEvent(ctx context.Context, e session.Event) error {
 			return err
 		}
 	}
+	// A title rides on whichever event carried it (any kind), so take it straight
+	// from e rather than recomputing from events as last_prompt does. Last
+	// non-empty write wins: a title is a single mutable field, not a stream, and
+	// the agent only ever reports the current one.
+	if title, _ := e.Payload["title"].(string); title != "" {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE sessions SET title = ? WHERE id = ?`, title, e.SessionID); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
@@ -246,7 +259,7 @@ func (s *Store) AppendEvent(ctx context.Context, e session.Event) error {
 // includeFinished is false, sessions in the finished state are omitted.
 func (s *Store) ListSessions(ctx context.Context, includeFinished bool) ([]session.Session, error) {
 	query := `
-		SELECT s.id, s.agent, s.native_id, s.cwd, s.host_id, s.started_at, s.last_event_at, s.status, s.pid, s.pid_start, s.boot_id, s.last_prompt
+		SELECT s.id, s.agent, s.native_id, s.cwd, s.host_id, s.started_at, s.last_event_at, s.status, s.pid, s.pid_start, s.boot_id, s.title, s.last_prompt
 		FROM sessions s`
 	var args []any
 	if !includeFinished {
@@ -443,7 +456,7 @@ func (s *Store) ResolveSessionID(ctx context.Context, idPrefix string) (string, 
 
 func (s *Store) resolveByPrefix(ctx context.Context, idPrefix string) (session.Session, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, agent, native_id, cwd, host_id, started_at, last_event_at, status, pid, pid_start, boot_id
+		SELECT id, agent, native_id, cwd, host_id, started_at, last_event_at, status, pid, pid_start, boot_id, title
 		FROM sessions WHERE id LIKE ? LIMIT ?`, idPrefix+"%", prefixMatchLimit)
 	if err != nil {
 		return session.Session{}, err
@@ -471,7 +484,7 @@ func (s *Store) resolveByPrefix(ctx context.Context, idPrefix string) (session.S
 	}
 }
 
-// scanSession reads the eleven core session columns from the current row, in the
+// scanSession reads the twelve core session columns from the current row, in the
 // column order every full-session SELECT uses, and applies the Unix→time and
 // status conversions. Callers selecting trailing columns (e.g. ListSessions'
 // last_prompt) pass their scan destinations as extra; they are appended to the
@@ -483,6 +496,7 @@ func scanSession(rows *sql.Rows, extra ...any) (session.Session, error) {
 	dest := append([]any{
 		&sess.ID, &sess.Agent, &sess.NativeID, &sess.CWD, &sess.HostID,
 		&startedAt, &lastEventAt, &status, &sess.PID, &sess.PIDStart, &sess.BootID,
+		&sess.Title,
 	}, extra...)
 	if err := rows.Scan(dest...); err != nil {
 		return session.Session{}, err

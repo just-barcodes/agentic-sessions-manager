@@ -15,6 +15,7 @@ func TestNextState(t *testing.T) {
 		{EventToolUse, StateRunning},
 		{EventNote, StateRunning},
 		{EventNotification, ""}, // notifications are routed by Transition, not NextState
+		{EventTitle, ""},        // a title is metadata: learning one must not move the session
 		{EventStop, StateIdle},
 		{EventSessionEnd, StateFinished},
 		{EventFail, StateFailed},
