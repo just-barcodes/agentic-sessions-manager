@@ -12,7 +12,7 @@ type State string
 const (
 	StateRunning  State = "running"
 	StateWaiting  State = "waiting"
-	StateIdle     State = "idle"     // alive but between turns; set by Stop. Also set manually via `sm mark`.
+	StateIdle     State = "idle"     // alive, at the prompt; set by SessionStart and Stop. Also set manually via `sm mark`.
 	StateFinished State = "finished" // session terminated cleanly; set only by SessionEnd.
 	StateFailed   State = "failed"
 	StateDead     State = "dead" // agent process gone without a clean stop; set by the reaper.
@@ -36,9 +36,9 @@ type Session struct {
 	// session, which happens a turn or so in.
 	Title string `json:",omitempty"`
 
-	// LastPrompt is the text of the most recent user prompt, derived from
-	// events rather than stored on the row. Only ListSessions populates it;
-	// other lookups leave it empty.
+	// LastPrompt is the text of the most recent user prompt. The store caches
+	// it on the session row (last_prompt) from the events table; only
+	// ListSessions populates it, other lookups leave it empty.
 	LastPrompt string `json:",omitempty"`
 }
 

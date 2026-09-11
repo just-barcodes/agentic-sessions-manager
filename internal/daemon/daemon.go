@@ -296,8 +296,8 @@ func newID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// startEmbeddedNATS boots an in-process NATS server bound to localhost so the
-// daemon owns the bus end-to-end. Logging is suppressed; bind failures surface
+// startEmbeddedNATS boots an in-process NATS server bound to host:port (from
+// SM_BUS_URL, loopback by default) so the daemon owns the bus end-to-end. Logging is suppressed; bind failures surface
 // as a ReadyForConnections timeout. All client connections must authenticate
 // with token — loopback is reachable by every local process, so the token is
 // what scopes the bus to this user.

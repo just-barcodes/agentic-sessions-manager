@@ -88,7 +88,6 @@ sm emit ──(NATS)──> daemon
 - `docs/state-model-design.md` — the session state model and transition rationale.
 - `contrib/` — `sm.service` (systemd --user unit) and `opencode-plugin/`.
 
-Two scoped `.claude` dirs exist for dogfooding, separate from repo-level config:
-`agent-tests/.claude/settings.json` wires Claude's hooks to `sm hook claude` so a
-Claude session run inside `agent-tests/` feeds real events into `sm`;
-`contrib/.claude/settings.local.json` is just a local permission allowlist.
+`agent-tests/.claude/settings.json` is a scoped dogfooding config, separate
+from repo-level config: it wires Claude's hooks to `sm hook claude` so a Claude
+session run inside `agent-tests/` feeds real events into `sm`.

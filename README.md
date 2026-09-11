@@ -118,14 +118,55 @@ On every state change the daemon updates the status surfaces:
 
 > Push notifications (previously `notify-send`) were removed pending a better design. The count file and `sm status` are the only surfaces today.
 
+## Install
+
+Requires Go 1.26+ and [Task](https://taskfile.dev). Linux only (liveness and
+focus read `/proc`; focus additionally needs Hyprland and tmux).
+
+```sh
+task install          # go build + install to ~/.local/bin/sm
+task service:install  # install contrib/sm.service and start the daemon (systemd --user)
+```
+
+### Claude Code hooks
+
+Every hook runs `sm hook claude`, which reads the hook JSON from stdin.
+Add this to `~/.claude/settings.json` (or a project's `.claude/settings.json`;
+`agent-tests/.claude/settings.json` is the same file, used for dogfooding):
+
+```json
+{
+  "hooks": {
+    "SessionStart":     [{ "hooks": [{ "type": "command", "command": "sm hook claude" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "sm hook claude" }] }],
+    "PreToolUse":       [{ "hooks": [{ "type": "command", "command": "sm hook claude" }] }],
+    "Notification":     [{ "hooks": [{ "type": "command", "command": "sm hook claude" }] }],
+    "Stop":             [{ "hooks": [{ "type": "command", "command": "sm hook claude" }] }],
+    "SessionEnd":       [{ "hooks": [{ "type": "command", "command": "sm hook claude" }] }]
+  }
+}
+```
+
+### opencode plugin
+
+```sh
+cp contrib/opencode-plugin/sm.ts ~/.config/opencode/plugin/sm.ts
+```
+
+The plugin pipes session events to `sm hook opencode`. Set `SM_BIN` if `sm`
+is not on opencode's `PATH`.
+
 ## CLI
 
 ```
-sm ls                 # list all known sessions, one line each (titled, see below)
+sm ls [--all]         # list live sessions, one line each (titled, see below); --all includes finished/dead
 sm show <id>          # details + recent events for one session
 sm mark <id> idle     # manual state override
 sm status             # machine-readable (JSON) summary for walker / scripts
 sm focus <id>         # raise the terminal window/tmux pane hosting the session
+sm daemon             # run the manager in the foreground (what the systemd unit runs)
+sm hook <agent>       # hook entry point; reads the agent's hook JSON from stdin
+sm emit <kind> [k=v]  # publish a raw event (low-level, for scripting)
 ```
 
 ### Switching to a waiting session
@@ -186,8 +227,8 @@ which host it lives on rather than trying to raise a window.
 - Transport: embedded NATS (`nats-server` as a library).
 - Behavior is specified as Gherkin scenarios in `bdd/features/`, run end to
   end against the real binary with `task bdd` (see CLAUDE.md for authoring).
-- Hook scripts: small shell snippets shipped with the project; user adds them to their Claude Code / opencode config.
-- Modular boundaries: agent adapters (claude, opencode, future) live behind a thin interface so adding a new agent only means writing hook scripts + an event mapper.
+- Hooks: the agent's own hook mechanism runs `sm hook <agent>` with the hook JSON on stdin (see [Install](#install)); no shell snippets to maintain.
+- Adding an agent means one parser in `internal/hook` that maps its hook payloads onto the shared event kinds; nothing downstream knows which agent an event came from.
 
 ## Future extensions
 
