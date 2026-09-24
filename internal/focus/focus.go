@@ -1,7 +1,7 @@
-// Package focus locates and raises the terminal window (and tmux pane) that
-// hosts a session's agent process, so the user can jump to a session that is
-// waiting for input. Hyprland + tmux specific; reads Linux /proc to walk the
-// process tree.
+// Package focus locates and raises the terminal window (and tmux pane, or
+// Orca tab) that hosts a session's agent process, so the user can jump to a
+// session that is waiting for input. Hyprland + tmux + Orca specific; reads
+// Linux /proc to walk the process tree.
 //
 // The session already carries the agent process fingerprint (pid, start time,
 // boot id) captured for liveness, so focus derives the window from that pid at
@@ -10,11 +10,13 @@
 package focus
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/just-barcodes/agentic-sessions-manager/internal/liveness"
 )
@@ -29,22 +31,35 @@ var tmuxPaneRe = regexp.MustCompile(`^%[0-9]+$`)
 type Client struct {
 	Address string `json:"address"`
 	PID     int    `json:"pid"`
+	Class   string `json:"class"`
 }
+
+// orcaWindowClass is the Hyprland window class of the Orca IDE.
+const orcaWindowClass = "orca"
+
+// After `orca-ide open` returns, the runtime briefly reports its graph as not
+// ready and the window may not be mapped yet, so the list and window lookups
+// are polled. Tests shorten the delay.
+var (
+	orcaStartAttempts = 20
+	orcaStartDelay    = 500 * time.Millisecond
+)
 
 // System is the set of OS/window-manager interactions Focus depends on. It is a
 // struct of funcs (not a live Hyprland/tmux) so the resolution logic is unit
-// testable; RealSystem wires these to /proc, hyprctl, and tmux.
+// testable; RealSystem wires these to /proc, hyprctl, tmux, and orca-ide.
 type System struct {
 	Ancestors   func(pid int) ([]int, error) // pid then its ancestors, nearest first
 	Environ     func(pid int) (map[string]string, error)
 	Clients     func() ([]Client, error)             // hyprctl clients -j
 	FocusWindow func(address string) error           // raise window (follows it to its workspace)
 	Tmux        func(args ...string) (string, error) // run tmux, return stdout
+	Orca        func(args ...string) (string, error) // run orca-ide, return stdout
 }
 
 // Focus raises the window hosting the agent process identified by id. It refuses
 // sessions whose process was never fingerprinted or has since exited, then
-// branches on whether the agent runs inside tmux.
+// branches on whether the agent runs inside tmux or an Orca tab.
 func Focus(sys System, id liveness.Identity) error {
 	if id.PID <= 0 {
 		return errors.New("session has no process fingerprint; cannot locate its window")
@@ -58,6 +73,9 @@ func Focus(sys System, id liveness.Identity) error {
 	}
 	if pane := strings.TrimSpace(env["TMUX_PANE"]); pane != "" {
 		return focusTmux(sys, pane)
+	}
+	if tab := strings.TrimSpace(env["ORCA_TAB_ID"]); tab != "" {
+		return focusOrca(sys, tab)
 	}
 	return focusBare(sys, id.PID)
 }
@@ -110,6 +128,109 @@ func focusTmux(sys System, pane string) error {
 		return fmt.Errorf("tmux select-pane: %w", err)
 	}
 	return nil
+}
+
+// focusOrca handles an agent running in a tab of the Orca IDE. Orca's terminals
+// live under a background daemon that owns no window, so the ancestor walk can
+// never succeed; instead it asks Orca to switch to the tab, then raises Orca's
+// window. The tab id is stable across Orca restarts while the terminal handle
+// in the agent's environment is not, so the handle is re-resolved from Orca's
+// terminal list each time. The daemon outlives the app, so when the app is not
+// running (the terminal list is unreachable) it is launched first.
+func focusOrca(sys System, tab string) error {
+	launched := false
+	out, err := sys.Orca("terminal", "list", "--json")
+	if err != nil {
+		if _, oerr := sys.Orca("open", "--json"); oerr != nil {
+			return fmt.Errorf("orca-ide open (Orca is not running and could not be started): %w", oerr)
+		}
+		launched = true
+		err = orcaPoll(func() error {
+			out, err = sys.Orca("terminal", "list", "--json")
+			return err
+		})
+		if err != nil {
+			return fmt.Errorf("orca-ide terminal list after starting Orca: %w", err)
+		}
+	}
+	var list struct {
+		Result struct {
+			Terminals []struct {
+				Handle string `json:"handle"`
+				TabID  string `json:"tabId"`
+			} `json:"terminals"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out), &list); err != nil {
+		return fmt.Errorf("parse orca-ide terminal list: %w", err)
+	}
+	handle := ""
+	for _, t := range list.Result.Terminals {
+		if t.TabID == tab {
+			handle = t.Handle
+			break
+		}
+	}
+	if handle == "" {
+		return fmt.Errorf("orca tab %s not found in orca-ide terminal list (tab closed?)", tab)
+	}
+
+	out, err = sys.Orca("terminal", "switch", "--terminal", handle, "--json")
+	if err != nil {
+		return fmt.Errorf("orca-ide terminal switch %s: %w", handle, err)
+	}
+	var sw struct {
+		Result struct {
+			Focus struct {
+				Navigated bool `json:"navigated"`
+			} `json:"focus"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out), &sw); err != nil {
+		return fmt.Errorf("parse orca-ide terminal switch: %w", err)
+	}
+	if !sw.Result.Focus.Navigated {
+		return fmt.Errorf("orca-ide did not navigate to tab %s", tab)
+	}
+
+	addr := ""
+	find := func() error {
+		clients, err := sys.Clients()
+		if err != nil {
+			return fmt.Errorf("list hyprland windows: %w", err)
+		}
+		for _, c := range clients {
+			if c.Class == orcaWindowClass {
+				addr = c.Address
+				return nil
+			}
+		}
+		return fmt.Errorf("no hyprland window with class %q", orcaWindowClass)
+	}
+	if launched {
+		err = orcaPoll(find)
+	} else {
+		err = find()
+	}
+	if err != nil {
+		return err
+	}
+	return sys.FocusWindow(addr)
+}
+
+// orcaPoll retries fn until it succeeds or orcaStartAttempts are used up,
+// returning the last error.
+func orcaPoll(fn func() error) error {
+	var err error
+	for i := range orcaStartAttempts {
+		if i > 0 {
+			time.Sleep(orcaStartDelay)
+		}
+		if err = fn(); err == nil {
+			return nil
+		}
+	}
+	return err
 }
 
 // windowAddrFor returns the address of the Hyprland window that owns pid's

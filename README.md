@@ -121,7 +121,8 @@ On every state change the daemon updates the status surfaces:
 ## Install
 
 Requires Go 1.26+ and [Task](https://taskfile.dev). Linux only (liveness and
-focus read `/proc`; focus additionally needs Hyprland and tmux).
+focus read `/proc`; focus additionally needs Hyprland and tmux, plus the
+`orca-ide` CLI for sessions hosted in Orca).
 
 ```sh
 task install          # go build + install to ~/.local/bin/sm
@@ -179,6 +180,13 @@ process to decide how to focus.
   Hyprland window that owns them (`hyprctl dispatch hl.dsp.focus`).
 - **Inside tmux** (`TMUX_PANE` set in the agent's environment): finds a client
   viewing the pane's session, raises that client's window, and selects the pane.
+- **Inside an Orca tab** (`ORCA_TAB_ID` set): Orca's terminals run under a
+  background daemon that owns no window, so the ancestor walk cannot succeed.
+  Instead it resolves the tab's current terminal handle via
+  `orca-ide terminal list`, switches Orca to that tab
+  (`orca-ide terminal switch`), then raises the Hyprland window with class
+  `orca`. Orca's daemon keeps the agent alive after the app is closed, so if
+  the app is not running it is launched first (`orca-ide open`).
 
 Focusing a window is a window-manager action, not agent control, so it stays
 within the observe-only scope. A session whose process was never fingerprinted

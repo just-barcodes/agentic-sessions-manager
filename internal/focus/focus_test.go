@@ -13,6 +13,7 @@ import (
 type recorder struct {
 	focused  string
 	tmuxRuns [][]string
+	orcaRuns [][]string
 }
 
 // fakeTmux returns a Tmux func that records every invocation and replies via
@@ -126,6 +127,180 @@ func TestFocusTmuxNoClientAnywhere(t *testing.T) {
 	}
 }
 
+const orcaList = `{"ok":true,"result":{"terminals":[
+	{"handle":"term_aaa","tabId":"tab-nvim","title":"NVIM"},
+	{"handle":"term_bbb","tabId":"tab-claude","title":"Claude Code","agentIdentity":"claude"}]}}`
+
+const orcaSwitched = `{"ok":true,"result":{"focus":{"handle":"term_bbb","tabId":"tab-claude","navigated":true}}}`
+
+// fakeOrca returns an Orca func that records every invocation and replies via
+// resp, keyed on the orca-ide subcommand (the second argument).
+func fakeOrca(rec *recorder, resp map[string]string) func(...string) (string, error) {
+	return func(args ...string) (string, error) {
+		rec.orcaRuns = append(rec.orcaRuns, args)
+		if len(args) < 2 {
+			return "", nil
+		}
+		return resp[args[1]], nil
+	}
+}
+
+func orcaClients() ([]Client, error) {
+	return []Client{
+		{Address: "0xKITTY", PID: 1614, Class: "kitty"},
+		{Address: "0x0RCA", PID: 222383, Class: "orca"},
+	}, nil
+}
+
+func TestFocusOrcaSwitchesTabThenRaisesWindow(t *testing.T) {
+	rec := &recorder{}
+	var order []string
+	sys := System{
+		Orca: func(args ...string) (string, error) {
+			rec.orcaRuns = append(rec.orcaRuns, args)
+			order = append(order, "orca:"+args[1])
+			switch args[1] {
+			case "list":
+				return orcaList, nil
+			case "switch":
+				return orcaSwitched, nil
+			}
+			return "", nil
+		},
+		Clients:     orcaClients,
+		FocusWindow: func(addr string) error { rec.focused = addr; order = append(order, "focus"); return nil },
+		Ancestors:   func(int) ([]int, error) { t.Fatal("orca path must not walk ancestors"); return nil, nil },
+	}
+	if err := focusOrca(sys, "tab-claude"); err != nil {
+		t.Fatalf("focusOrca: %v", err)
+	}
+	if rec.focused != "0x0RCA" {
+		t.Errorf("focused %q, want the orca window 0x0RCA", rec.focused)
+	}
+	if got := strings.Join(order, ","); got != "orca:list,orca:switch,focus" {
+		t.Errorf("order = %s; want tab switch before window raise", got)
+	}
+	// The handle passed to switch is the one resolved from the list by tab id.
+	sw := rec.orcaRuns[1]
+	if want := []string{"terminal", "switch", "--terminal", "term_bbb", "--json"}; strings.Join(sw, " ") != strings.Join(want, " ") {
+		t.Errorf("switch args = %v, want %v", sw, want)
+	}
+}
+
+func TestFocusOrcaTabNotFound(t *testing.T) {
+	rec := &recorder{}
+	sys := System{
+		Orca:        fakeOrca(rec, map[string]string{"list": orcaList}),
+		Clients:     orcaClients,
+		FocusWindow: func(string) error { t.Fatal("should not focus when the tab is unknown"); return nil },
+	}
+	err := focusOrca(sys, "tab-gone")
+	if err == nil {
+		t.Fatal("expected error when the tab id is not in the terminal list")
+	}
+	if !strings.Contains(err.Error(), "tab-gone") || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error %q should name the missing tab", err)
+	}
+	if len(rec.orcaRuns) != 1 {
+		t.Errorf("orca calls = %v; expected only the list, no switch", rec.orcaRuns)
+	}
+}
+
+func TestFocusOrcaStartsAppWhenNotRunning(t *testing.T) {
+	orcaStartDelay = 0
+	rec := &recorder{}
+	lists, clientCalls := 0, 0
+	sys := System{
+		Orca: func(args ...string) (string, error) {
+			rec.orcaRuns = append(rec.orcaRuns, args)
+			switch args[1] {
+			case "list":
+				lists++
+				if lists <= 2 { // down before open, then briefly not ready after it
+					return "", errors.New("runtime_unavailable")
+				}
+				return orcaList, nil
+			case "switch":
+				return orcaSwitched, nil
+			}
+			return "", nil
+		},
+		Clients: func() ([]Client, error) {
+			clientCalls++
+			if clientCalls == 1 { // window not mapped yet right after launch
+				return nil, nil
+			}
+			return orcaClients()
+		},
+		FocusWindow: func(addr string) error { rec.focused = addr; return nil },
+	}
+	if err := focusOrca(sys, "tab-claude"); err != nil {
+		t.Fatalf("focusOrca: %v", err)
+	}
+	if rec.focused != "0x0RCA" {
+		t.Errorf("focused %q, want the orca window", rec.focused)
+	}
+	subs := make([]string, len(rec.orcaRuns))
+	for i, c := range rec.orcaRuns {
+		subs[i] = strings.Join(c[:2], " ")
+	}
+	want := "terminal list,open --json,terminal list,terminal list,terminal switch"
+	if got := strings.Join(subs, ","); got != want {
+		t.Errorf("orca calls = %s; want %s", got, want)
+	}
+}
+
+func TestFocusOrcaCannotStartApp(t *testing.T) {
+	sys := System{
+		Orca:        func(...string) (string, error) { return "", errors.New("exit status 1") },
+		Clients:     orcaClients,
+		FocusWindow: func(string) error { t.Fatal("should not focus when Orca cannot start"); return nil },
+	}
+	err := focusOrca(sys, "tab-claude")
+	if err == nil {
+		t.Fatal("expected error when orca-ide open fails")
+	}
+	if !strings.Contains(err.Error(), "could not be started") {
+		t.Errorf("error %q should say Orca could not be started", err)
+	}
+}
+
+func TestFocusOrcaStillUnreachableAfterStart(t *testing.T) {
+	orcaStartDelay = 0
+	sys := System{
+		Orca: func(args ...string) (string, error) {
+			if args[0] == "open" {
+				return "", nil
+			}
+			return "", errors.New("runtime_unavailable")
+		},
+		FocusWindow: func(string) error { t.Fatal("should not focus when the runtime never comes up"); return nil },
+	}
+	err := focusOrca(sys, "tab-claude")
+	if err == nil {
+		t.Fatal("expected error when the terminal list stays unreachable after open")
+	}
+	if !strings.Contains(err.Error(), "after starting Orca") {
+		t.Errorf("error %q should say the list failed after starting Orca", err)
+	}
+}
+
+func TestFocusOrcaNoOrcaWindow(t *testing.T) {
+	rec := &recorder{}
+	sys := System{
+		Orca:        fakeOrca(rec, map[string]string{"list": orcaList, "switch": orcaSwitched}),
+		Clients:     func() ([]Client, error) { return []Client{{Address: "0xKITTY", PID: 1614, Class: "kitty"}}, nil },
+		FocusWindow: func(string) error { t.Fatal("should not focus a non-orca window"); return nil },
+	}
+	err := focusOrca(sys, "tab-claude")
+	if err == nil {
+		t.Fatal("expected error when no window has class orca")
+	}
+	if !strings.Contains(err.Error(), `class "orca"`) {
+		t.Errorf("error %q should name the missing window class", err)
+	}
+}
+
 func TestFocusRejectsUnfingerprintedSession(t *testing.T) {
 	err := Focus(System{}, liveness.Identity{PID: 0})
 	if err == nil {
@@ -171,6 +346,24 @@ func TestFocusRoutesByEnviron(t *testing.T) {
 		}
 		if !routed {
 			t.Error("expected the tmux path when TMUX_PANE is set")
+		}
+	})
+
+	t.Run("orca when ORCA_TAB_ID set", func(t *testing.T) {
+		rec := &recorder{}
+		sys := System{
+			Environ:     func(int) (map[string]string, error) { return map[string]string{"ORCA_TAB_ID": "tab-claude"}, nil },
+			Orca:        fakeOrca(rec, map[string]string{"list": orcaList, "switch": orcaSwitched}),
+			Clients:     orcaClients,
+			FocusWindow: func(addr string) error { rec.focused = addr; return nil },
+			Ancestors:   func(int) ([]int, error) { t.Fatal("should not walk ancestors on the orca path"); return nil, nil },
+			Tmux:        func(...string) (string, error) { t.Fatal("should not call tmux on the orca path"); return "", nil },
+		}
+		if err := Focus(sys, live); err != nil {
+			t.Fatalf("Focus: %v", err)
+		}
+		if rec.focused != "0x0RCA" {
+			t.Errorf("focused %q, want the orca window", rec.focused)
 		}
 	})
 

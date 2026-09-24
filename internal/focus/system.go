@@ -12,7 +12,8 @@ import (
 )
 
 // RealSystem wires Focus to the live host: /proc for process inspection,
-// hyprctl for window control, and tmux for pane control.
+// hyprctl for window control, tmux for pane control, and orca-ide for Orca
+// tab control.
 func RealSystem() System {
 	return System{
 		Ancestors:   ancestors,
@@ -20,6 +21,7 @@ func RealSystem() System {
 		Clients:     hyprlandClients,
 		FocusWindow: hyprlandFocus,
 		Tmux:        runTmux,
+		Orca:        runOrca,
 	}
 }
 
@@ -83,6 +85,14 @@ func hyprlandFocus(address string) error {
 
 func runTmux(args ...string) (string, error) {
 	out, err := exec.Command("tmux", args...).Output()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+func runOrca(args ...string) (string, error) {
+	out, err := exec.Command("orca-ide", args...).Output()
 	if err != nil {
 		return "", err
 	}
