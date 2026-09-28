@@ -12,6 +12,7 @@ import (
 
 	"github.com/just-barcodes/agentic-sessions-manager/internal/alert"
 	"github.com/just-barcodes/agentic-sessions-manager/internal/bus"
+	"github.com/just-barcodes/agentic-sessions-manager/internal/liveness"
 	"github.com/just-barcodes/agentic-sessions-manager/internal/session"
 	"github.com/just-barcodes/agentic-sessions-manager/internal/store"
 )
@@ -215,4 +216,53 @@ func TestEmbeddedNATSHonorsBusURL(t *testing.T) {
 		return
 	}
 	t.Fatalf("embedded NATS failed to bind a fresh free port after 3 attempts: %v", lastErr)
+}
+
+// TestResumedSessionSurvivesSweep reproduces the Orca-restart bug: a session
+// reaped dead (its original process is gone) is resumed under a new process.
+// The resume SessionStart carries the new fingerprint; the daemon must store it
+// so the next sweep probes the live pid instead of re-reaping the session.
+func TestResumedSessionSurvivesSweep(t *testing.T) {
+	live, ok := liveness.Capture()
+	if !ok {
+		t.Skip("cannot fingerprint a live ancestor process")
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "sm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+	const host = "h"
+	t0 := time.Unix(1_000_000, 0)
+	if err := st.CreateSession(ctx, session.Session{
+		ID: "s", Agent: "claude", NativeID: "n", CWD: "/tmp", HostID: host,
+		StartedAt: t0, LastEventAt: t0, Status: session.StateDead,
+		PID: 4242, PIDStart: 1, BootID: "not-the-current-boot",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &handler{store: st, hostID: host}
+	h.handle(session.Event{
+		Agent: "claude", NativeID: "n", Kind: session.EventSessionStart,
+		Timestamp: t0.Add(time.Second),
+		PID:       live.PID, PIDStart: live.Start, BootID: live.BootID, HostID: host,
+	})
+	h.sweep()
+
+	all, err := st.ListSessions(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("want 1 session, got %d", len(all))
+	}
+	if all[0].Status != session.StateIdle {
+		t.Fatalf("resumed session status = %q after sweep, want idle", all[0].Status)
+	}
+	if all[0].PID != live.PID {
+		t.Errorf("pid = %d, want refreshed pid %d", all[0].PID, live.PID)
+	}
 }

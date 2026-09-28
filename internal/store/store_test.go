@@ -628,3 +628,35 @@ func TestAppendEventTitle(t *testing.T) {
 		t.Errorf("ListSessions did not carry the title: %+v", all)
 	}
 }
+
+// TestUpdateIdentity verifies a session's process fingerprint can be replaced
+// after creation, so a resumed session is probed by its new pid.
+func TestUpdateIdentity(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "sm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+	now := time.Now()
+	if err := st.CreateSession(ctx, session.Session{
+		ID: "s", Agent: "claude", CWD: "/tmp", HostID: "h",
+		StartedAt: now, LastEventAt: now, Status: session.StateIdle,
+		PID: 1, PIDStart: 1, BootID: "old",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateIdentity(ctx, "s", 2, 22, "new"); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := st.ListSessions(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := all[0]
+	if got.PID != 2 || got.PIDStart != 22 || got.BootID != "new" {
+		t.Errorf("identity not updated: pid=%d start=%d boot=%q", got.PID, got.PIDStart, got.BootID)
+	}
+}

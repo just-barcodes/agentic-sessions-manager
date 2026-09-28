@@ -246,6 +246,11 @@ func (h *handler) resolveSession(ctx context.Context, e *session.Event) error {
 		}
 		if existing != "" {
 			e.SessionID = existing
+			// A resumed session keeps its native id but runs under a new
+			// process: refresh the fingerprint so the reaper probes the live pid.
+			if e.PID != 0 {
+				return h.store.UpdateIdentity(ctx, existing, e.PID, e.PIDStart, e.BootID)
+			}
 			return nil
 		}
 	}

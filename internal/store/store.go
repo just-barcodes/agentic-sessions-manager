@@ -187,6 +187,17 @@ func (s *Store) FindSessionByNative(ctx context.Context, agent, nativeID string)
 	return id, err
 }
 
+// UpdateIdentity refreshes a session's process fingerprint. A resumed session
+// (claude --resume, an Orca restart) keeps its native id but runs under a new
+// process; without this the reaper keeps probing the old pid and marks the
+// live session dead within one sweep.
+func (s *Store) UpdateIdentity(ctx context.Context, id string, pid int, pidStart uint64, bootID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET pid = ?, pid_start = ?, boot_id = ? WHERE id = ?`,
+		pid, pidStart, bootID, id)
+	return err
+}
+
 // UpdateStatus applies a state transition, but only if the event is at least as
 // recent as the last one already applied. The recency guard (ts >= last_event_at)
 // drops events that arrive out of order — e.g. a stale notification landing after
