@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/cucumber/godog v0.16.0
 	github.com/nats-io/nats-server/v2 v2.15.1
-	github.com/nats-io/nats.go v1.54.0
+	github.com/nats-io/nats.go v1.55.0
 	modernc.org/sqlite v1.61.0
 )
 
