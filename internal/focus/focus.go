@@ -55,6 +55,9 @@ type System struct {
 	FocusWindow func(address string) error           // raise window (follows it to its workspace)
 	Tmux        func(args ...string) (string, error) // run tmux, return stdout
 	Orca        func(args ...string) (string, error) // run orca-ide, return stdout
+	// OrcaRPC calls a method on the Orca runtime under userDataPath and
+	// returns the result payload. Needed where orca-ide has no subcommand.
+	OrcaRPC func(userDataPath, method string, params any) ([]byte, error)
 }
 
 // Focus raises the window hosting the agent process identified by id. It refuses
@@ -76,6 +79,9 @@ func Focus(sys System, id liveness.Identity) error {
 	}
 	if tab := strings.TrimSpace(env["ORCA_TAB_ID"]); tab != "" {
 		return focusOrca(sys, tab)
+	}
+	if chat := strings.TrimSpace(env["ORCA_AGENT_SESSION_ID"]); chat != "" {
+		return focusOrcaChat(sys, env["ORCA_USER_DATA_PATH"], chat)
 	}
 	return focusBare(sys, id.PID)
 }
@@ -193,6 +199,35 @@ func focusOrca(sys System, tab string) error {
 		return fmt.Errorf("orca-ide did not navigate to tab %s", tab)
 	}
 
+	return raiseOrcaWindow(sys, launched)
+}
+
+// focusOrcaChat handles an agent started by Orca as a chat (Orca's
+// "structured" agent session) rather than in a terminal tab. The agent runs
+// under the Orca app with piped stdio, so there is no terminal handle; instead
+// it asks the Orca runtime to reveal the chat (agentSession.reveal, which
+// orca-ide exposes no subcommand for), then raises Orca's window. The chat's
+// supervisor exits with the app, so a live agent implies a running app.
+func focusOrcaChat(sys System, userDataPath, session string) error {
+	out, err := sys.OrcaRPC(userDataPath, "agentSession.reveal", map[string]string{"sessionId": session})
+	if err != nil {
+		return fmt.Errorf("orca reveal chat %s: %w", session, err)
+	}
+	var res struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		return fmt.Errorf("parse orca reveal chat: %w", err)
+	}
+	if !res.OK {
+		return fmt.Errorf("orca did not reveal chat %s", session)
+	}
+	return raiseOrcaWindow(sys, false)
+}
+
+// raiseOrcaWindow focuses the Hyprland window with Orca's class, polling for
+// it when Orca was just launched and its window may not be mapped yet.
+func raiseOrcaWindow(sys System, poll bool) error {
 	addr := ""
 	find := func() error {
 		clients, err := sys.Clients()
@@ -207,7 +242,8 @@ func focusOrca(sys System, tab string) error {
 		}
 		return fmt.Errorf("no hyprland window with class %q", orcaWindowClass)
 	}
-	if launched {
+	var err error
+	if poll {
 		err = orcaPoll(find)
 	} else {
 		err = find()

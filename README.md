@@ -187,6 +187,12 @@ process to decide how to focus.
   (`orca-ide terminal switch`), then raises the Hyprland window with class
   `orca`. Orca's daemon keeps the agent alive after the app is closed, so if
   the app is not running it is launched first (`orca-ide open`).
+- **An Orca chat** (`ORCA_AGENT_SESSION_ID` set, no `ORCA_TAB_ID`): an agent
+  Orca started as a chat has no terminal. `orca-ide` has no subcommand to
+  open a chat, so `sm focus` calls the Orca runtime directly
+  (`agentSession.reveal` over the socket named in
+  `$ORCA_USER_DATA_PATH/orca-runtime.json`), then raises the `orca` window.
+  This uses Orca's internal RPC and may break on Orca updates.
 
 Focusing a window is a window-manager action, not agent control, so it stays
 within the observe-only scope. A session whose process was never fingerprinted

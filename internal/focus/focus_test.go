@@ -301,6 +301,43 @@ func TestFocusOrcaNoOrcaWindow(t *testing.T) {
 	}
 }
 
+func TestFocusOrcaChatRevealsThenRaisesWindow(t *testing.T) {
+	var order []string
+	sys := System{
+		OrcaRPC: func(userData, method string, params any) ([]byte, error) {
+			order = append(order, "reveal")
+			if userData != "/u/orca" || method != "agentSession.reveal" {
+				t.Errorf("rpc(%q, %q), want (/u/orca, agentSession.reveal)", userData, method)
+			}
+			if p, _ := params.(map[string]string); p["sessionId"] != "claude_abc" {
+				t.Errorf("params %v, want sessionId claude_abc", params)
+			}
+			return []byte(`{"ok":true,"sessionId":"claude_abc"}`), nil
+		},
+		Clients:     orcaClients,
+		FocusWindow: func(addr string) error { order = append(order, "focus "+addr); return nil },
+	}
+	if err := focusOrcaChat(sys, "/u/orca", "claude_abc"); err != nil {
+		t.Fatalf("focusOrcaChat: %v", err)
+	}
+	if got := strings.Join(order, ","); got != "reveal,focus 0x0RCA" {
+		t.Errorf("order %q, want reveal then focus of the orca window", got)
+	}
+}
+
+func TestFocusOrcaChatRevealFails(t *testing.T) {
+	sys := System{
+		OrcaRPC: func(string, string, any) ([]byte, error) {
+			return nil, errors.New("orca runtime: gone: This chat is no longer on this host.")
+		},
+		FocusWindow: func(string) error { t.Fatal("should not focus when the reveal failed"); return nil },
+	}
+	err := focusOrcaChat(sys, "/u/orca", "claude_abc")
+	if err == nil || !strings.Contains(err.Error(), "no longer on this host") {
+		t.Fatalf("error %v should carry Orca's reason", err)
+	}
+}
+
 func TestFocusRejectsUnfingerprintedSession(t *testing.T) {
 	err := Focus(System{}, liveness.Identity{PID: 0})
 	if err == nil {
@@ -358,6 +395,25 @@ func TestFocusRoutesByEnviron(t *testing.T) {
 			FocusWindow: func(addr string) error { rec.focused = addr; return nil },
 			Ancestors:   func(int) ([]int, error) { t.Fatal("should not walk ancestors on the orca path"); return nil, nil },
 			Tmux:        func(...string) (string, error) { t.Fatal("should not call tmux on the orca path"); return "", nil },
+		}
+		if err := Focus(sys, live); err != nil {
+			t.Fatalf("Focus: %v", err)
+		}
+		if rec.focused != "0x0RCA" {
+			t.Errorf("focused %q, want the orca window", rec.focused)
+		}
+	})
+
+	t.Run("orca chat when ORCA_AGENT_SESSION_ID set", func(t *testing.T) {
+		rec := &recorder{}
+		sys := System{
+			Environ: func(int) (map[string]string, error) {
+				return map[string]string{"ORCA_AGENT_SESSION_ID": "claude_abc", "ORCA_USER_DATA_PATH": "/u/orca", "TERMINAL": "ghostty"}, nil
+			},
+			OrcaRPC:     func(string, string, any) ([]byte, error) { return []byte(`{"ok":true}`), nil },
+			Clients:     orcaClients,
+			FocusWindow: func(addr string) error { rec.focused = addr; return nil },
+			Ancestors:   func(int) ([]int, error) { t.Fatal("should not walk ancestors on the orca chat path"); return nil, nil },
 		}
 		if err := Focus(sys, live); err != nil {
 			t.Fatalf("Focus: %v", err)
