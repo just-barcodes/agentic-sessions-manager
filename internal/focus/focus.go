@@ -204,23 +204,57 @@ func focusOrca(sys System, tab string) error {
 
 // focusOrcaChat handles an agent started by Orca as a chat (Orca's
 // "structured" agent session) rather than in a terminal tab. The agent runs
-// under the Orca app with piped stdio, so there is no terminal handle; instead
-// it asks the Orca runtime to reveal the chat (agentSession.reveal, which
-// orca-ide exposes no subcommand for), then raises Orca's window. The chat's
+// under the Orca app with piped stdio, so there is no terminal handle. The
+// chat's tab is found in `orca-ide worktree ps`, whose pane key for a chat is
+// "structured-agent-session-<session>:<tabId>"; the runtime is then asked to
+// show that tab (terminal.reveal, which orca-ide exposes no subcommand for and
+// which also takes chat tabs), and Orca's window is raised. The chat's
 // supervisor exits with the app, so a live agent implies a running app.
 func focusOrcaChat(sys System, userDataPath, session string) error {
-	out, err := sys.OrcaRPC(userDataPath, "agentSession.reveal", map[string]string{"sessionId": session})
+	out, err := sys.Orca("worktree", "ps", "--limit", "10000", "--json")
 	if err != nil {
-		return fmt.Errorf("orca reveal chat %s: %w", session, err)
+		return fmt.Errorf("orca-ide worktree ps: %w", err)
+	}
+	var ps struct {
+		Result struct {
+			Worktrees []struct {
+				WorktreeID string `json:"worktreeId"`
+				Agents     []struct {
+					PaneKey string `json:"paneKey"`
+				} `json:"agents"`
+			} `json:"worktrees"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(out), &ps); err != nil {
+		return fmt.Errorf("parse orca-ide worktree ps: %w", err)
+	}
+	prefix := "structured-agent-session-" + session + ":"
+	worktree, tab := "", ""
+	for _, w := range ps.Result.Worktrees {
+		for _, a := range w.Agents {
+			if t, ok := strings.CutPrefix(a.PaneKey, prefix); ok && t != "" {
+				worktree, tab = w.WorktreeID, t
+			}
+		}
+	}
+	if tab == "" {
+		return fmt.Errorf("orca chat %s not found in orca-ide worktree ps (tab closed?)", session)
+	}
+
+	out2, err := sys.OrcaRPC(userDataPath, "terminal.reveal", map[string]string{"worktreeId": worktree, "tabId": tab})
+	if err != nil {
+		return fmt.Errorf("orca reveal chat tab %s: %w", tab, err)
 	}
 	var res struct {
-		OK bool `json:"ok"`
+		Reveal struct {
+			Navigated bool `json:"navigated"`
+		} `json:"reveal"`
 	}
-	if err := json.Unmarshal(out, &res); err != nil {
-		return fmt.Errorf("parse orca reveal chat: %w", err)
+	if err := json.Unmarshal(out2, &res); err != nil {
+		return fmt.Errorf("parse orca reveal chat tab: %w", err)
 	}
-	if !res.OK {
-		return fmt.Errorf("orca did not reveal chat %s", session)
+	if !res.Reveal.Navigated {
+		return fmt.Errorf("orca did not navigate to chat tab %s", tab)
 	}
 	return raiseOrcaWindow(sys, false)
 }

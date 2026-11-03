@@ -301,18 +301,28 @@ func TestFocusOrcaNoOrcaWindow(t *testing.T) {
 	}
 }
 
-func TestFocusOrcaChatRevealsThenRaisesWindow(t *testing.T) {
+// orcaPS is an `orca-ide worktree ps --json` reply with one terminal agent and
+// one chat agent (session claude_abc, tab tab-chat) in worktree wt-1.
+const orcaPS = `{"result":{"worktrees":[{"worktreeId":"wt-1","agents":[
+	{"paneKey":"tab-term:leaf-1"},
+	{"paneKey":"structured-agent-session-claude_abc:tab-chat"}]}]}}`
+
+func TestFocusOrcaChatRevealsTabThenRaisesWindow(t *testing.T) {
 	var order []string
 	sys := System{
+		Orca: func(args ...string) (string, error) {
+			order = append(order, "ps")
+			return orcaPS, nil
+		},
 		OrcaRPC: func(userData, method string, params any) ([]byte, error) {
 			order = append(order, "reveal")
-			if userData != "/u/orca" || method != "agentSession.reveal" {
-				t.Errorf("rpc(%q, %q), want (/u/orca, agentSession.reveal)", userData, method)
+			if userData != "/u/orca" || method != "terminal.reveal" {
+				t.Errorf("rpc(%q, %q), want (/u/orca, terminal.reveal)", userData, method)
 			}
-			if p, _ := params.(map[string]string); p["sessionId"] != "claude_abc" {
-				t.Errorf("params %v, want sessionId claude_abc", params)
+			if p, _ := params.(map[string]string); p["worktreeId"] != "wt-1" || p["tabId"] != "tab-chat" {
+				t.Errorf("params %v, want worktree wt-1 tab tab-chat", params)
 			}
-			return []byte(`{"ok":true,"sessionId":"claude_abc"}`), nil
+			return []byte(`{"reveal":{"navigated":true}}`), nil
 		},
 		Clients:     orcaClients,
 		FocusWindow: func(addr string) error { order = append(order, "focus "+addr); return nil },
@@ -320,21 +330,34 @@ func TestFocusOrcaChatRevealsThenRaisesWindow(t *testing.T) {
 	if err := focusOrcaChat(sys, "/u/orca", "claude_abc"); err != nil {
 		t.Fatalf("focusOrcaChat: %v", err)
 	}
-	if got := strings.Join(order, ","); got != "reveal,focus 0x0RCA" {
-		t.Errorf("order %q, want reveal then focus of the orca window", got)
+	if got := strings.Join(order, ","); got != "ps,reveal,focus 0x0RCA" {
+		t.Errorf("order %q, want ps, reveal, then focus of the orca window", got)
 	}
 }
 
-func TestFocusOrcaChatRevealFails(t *testing.T) {
+func TestFocusOrcaChatNotListed(t *testing.T) {
 	sys := System{
+		Orca: func(...string) (string, error) { return orcaPS, nil },
 		OrcaRPC: func(string, string, any) ([]byte, error) {
-			return nil, errors.New("orca runtime: gone: This chat is no longer on this host.")
+			t.Fatal("should not reveal an unknown chat")
+			return nil, nil
 		},
-		FocusWindow: func(string) error { t.Fatal("should not focus when the reveal failed"); return nil },
+		FocusWindow: func(string) error { t.Fatal("should not focus an unknown chat"); return nil },
 	}
-	err := focusOrcaChat(sys, "/u/orca", "claude_abc")
-	if err == nil || !strings.Contains(err.Error(), "no longer on this host") {
-		t.Fatalf("error %v should carry Orca's reason", err)
+	err := focusOrcaChat(sys, "/u/orca", "claude_gone")
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("error %v should say the chat was not found", err)
+	}
+}
+
+func TestFocusOrcaChatNotNavigated(t *testing.T) {
+	sys := System{
+		Orca:        func(...string) (string, error) { return orcaPS, nil },
+		OrcaRPC:     func(string, string, any) ([]byte, error) { return []byte(`{"reveal":{"navigated":false}}`), nil },
+		FocusWindow: func(string) error { t.Fatal("should not focus when Orca did not navigate"); return nil },
+	}
+	if err := focusOrcaChat(sys, "/u/orca", "claude_abc"); err == nil {
+		t.Fatal("expected error when Orca did not navigate")
 	}
 }
 
@@ -410,7 +433,8 @@ func TestFocusRoutesByEnviron(t *testing.T) {
 			Environ: func(int) (map[string]string, error) {
 				return map[string]string{"ORCA_AGENT_SESSION_ID": "claude_abc", "ORCA_USER_DATA_PATH": "/u/orca", "TERMINAL": "ghostty"}, nil
 			},
-			OrcaRPC:     func(string, string, any) ([]byte, error) { return []byte(`{"ok":true}`), nil },
+			Orca:        func(...string) (string, error) { return orcaPS, nil },
+			OrcaRPC:     func(string, string, any) ([]byte, error) { return []byte(`{"reveal":{"navigated":true}}`), nil },
 			Clients:     orcaClients,
 			FocusWindow: func(addr string) error { rec.focused = addr; return nil },
 			Ancestors:   func(int) ([]int, error) { t.Fatal("should not walk ancestors on the orca chat path"); return nil, nil },
