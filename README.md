@@ -188,12 +188,14 @@ process to decide how to focus.
   `orca`. Orca's daemon keeps the agent alive after the app is closed, so if
   the app is not running it is launched first (`orca-ide open`).
 - **An Orca chat** (`ORCA_AGENT_SESSION_ID` set, no `ORCA_TAB_ID`): an agent
-  Orca started as a chat has no terminal. `sm focus` finds the chat's tab in
-  `orca-ide worktree ps`, then asks the Orca runtime to show it
-  (`terminal.reveal` over the socket named in
-  `$ORCA_USER_DATA_PATH/orca-runtime.json`, since `orca-ide` has no
-  subcommand for it), then raises the `orca` window. This uses Orca's
-  internal RPC and may break on Orca updates.
+  Orca started as a chat has no terminal, and `orca-ide` has no subcommand to
+  open a chat. `sm focus` finds the chat's worktree and tab in
+  `orca-ide worktree ps`, then calls the Orca runtime directly over the
+  socket named in `$ORCA_USER_DATA_PATH/orca-runtime.json`:
+  `agentSession.reveal` (registers the chat tab), `terminal.reveal` (switches
+  to its worktree) and `session.tabs.activate` (selects the chat tab). Then it
+  raises the `orca` window. This uses Orca's internal RPC and may break on
+  Orca updates.
 
 Focusing a window is a window-manager action, not agent control, so it stays
 within the observe-only scope. A session whose process was never fingerprinted

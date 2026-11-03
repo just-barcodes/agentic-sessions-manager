@@ -307,7 +307,7 @@ const orcaPS = `{"result":{"worktrees":[{"worktreeId":"wt-1","agents":[
 	{"paneKey":"tab-term:leaf-1"},
 	{"paneKey":"structured-agent-session-claude_abc:tab-chat"}]}]}}`
 
-func TestFocusOrcaChatRevealsTabThenRaisesWindow(t *testing.T) {
+func TestFocusOrcaChatSelectsTabThenRaisesWindow(t *testing.T) {
 	var order []string
 	sys := System{
 		Orca: func(args ...string) (string, error) {
@@ -315,13 +315,25 @@ func TestFocusOrcaChatRevealsTabThenRaisesWindow(t *testing.T) {
 			return orcaPS, nil
 		},
 		OrcaRPC: func(userData, method string, params any) ([]byte, error) {
-			order = append(order, "reveal")
-			if userData != "/u/orca" || method != "terminal.reveal" {
-				t.Errorf("rpc(%q, %q), want (/u/orca, terminal.reveal)", userData, method)
+			if userData != "/u/orca" {
+				t.Errorf("rpc user data %q, want /u/orca", userData)
 			}
-			if p, _ := params.(map[string]string); p["worktreeId"] != "wt-1" || p["tabId"] != "tab-chat" {
-				t.Errorf("params %v, want worktree wt-1 tab tab-chat", params)
+			p, _ := params.(map[string]string)
+			switch method {
+			case "agentSession.reveal":
+				if p["sessionId"] != "claude_abc" {
+					t.Errorf("agentSession.reveal params %v, want session claude_abc", p)
+				}
+			case "terminal.reveal":
+				if p["worktreeId"] != "wt-1" || p["tabId"] != "tab-chat" {
+					t.Errorf("terminal.reveal params %v, want worktree wt-1 tab tab-chat", p)
+				}
+			case "session.tabs.activate":
+				if p["worktree"] != "wt-1" || p["tabId"] != "agent-session:claude_abc" || p["navigation"] != "host" {
+					t.Errorf("session.tabs.activate params %v", p)
+				}
 			}
+			order = append(order, method)
 			return []byte(`{"reveal":{"navigated":true}}`), nil
 		},
 		Clients:     orcaClients,
@@ -330,8 +342,9 @@ func TestFocusOrcaChatRevealsTabThenRaisesWindow(t *testing.T) {
 	if err := focusOrcaChat(sys, "/u/orca", "claude_abc"); err != nil {
 		t.Fatalf("focusOrcaChat: %v", err)
 	}
-	if got := strings.Join(order, ","); got != "ps,reveal,focus 0x0RCA" {
-		t.Errorf("order %q, want ps, reveal, then focus of the orca window", got)
+	want := "ps,agentSession.reveal,terminal.reveal,session.tabs.activate,focus 0x0RCA"
+	if got := strings.Join(order, ","); got != want {
+		t.Errorf("order %q, want %q", got, want)
 	}
 }
 
@@ -352,8 +365,13 @@ func TestFocusOrcaChatNotListed(t *testing.T) {
 
 func TestFocusOrcaChatNotNavigated(t *testing.T) {
 	sys := System{
-		Orca:        func(...string) (string, error) { return orcaPS, nil },
-		OrcaRPC:     func(string, string, any) ([]byte, error) { return []byte(`{"reveal":{"navigated":false}}`), nil },
+		Orca: func(...string) (string, error) { return orcaPS, nil },
+		OrcaRPC: func(_, method string, _ any) ([]byte, error) {
+			if method == "session.tabs.activate" {
+				t.Fatal("should not activate the tab when Orca did not navigate")
+			}
+			return []byte(`{"reveal":{"navigated":false}}`), nil
+		},
 		FocusWindow: func(string) error { t.Fatal("should not focus when Orca did not navigate"); return nil },
 	}
 	if err := focusOrcaChat(sys, "/u/orca", "claude_abc"); err == nil {
